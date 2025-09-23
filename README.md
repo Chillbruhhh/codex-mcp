@@ -142,11 +142,11 @@ curl -X POST http://localhost:8210/tools/codex_chat \
 
 ## OAuth Authentication Setup
 
-🎉 **Recommended: Use your ChatGPT Plus subscription instead of separate OpenAI API billing!**
+**Recommended: Use your ChatGPT Plus subscription instead of separate OpenAI API billing!**
 
-The server automatically detects and uses OAuth tokens from your host system's Codex CLI installation, making setup incredibly simple.
+**ZERO-CONFIG OAUTH**: The server automatically detects and uses existing OAuth tokens from your system - no manual configuration required!
 
-### ⚡ Quick OAuth Setup (Most Efficient)
+### Quick OAuth Setup (Most Efficient)
 
 **Step 1: Authenticate with Codex CLI on your host system**
 ```bash
@@ -168,16 +168,18 @@ docker-compose --profile codex-mcp up -d
 # Check that containers are using OAuth (not API key)
 docker logs codex-mcp-server | grep -i oauth
 
-# You should see: "✅ Injecting OAuth tokens for ChatGPT subscription authentication"
+# You should see: "Injecting OAuth tokens for ChatGPT subscription authentication"
 ```
 
-That's it! 🎯 **The server automatically:**
-- Detects OAuth tokens in `~/.codex/auth.json`
-- Mounts them from Windows host to Linux containers
-- Injects tokens into each agent container
-- Uses your ChatGPT Plus subscription for all requests
+That's it! **Automatic OAuth Detection works by:**
+- **Auto-detecting** OAuth tokens in `~/.codex/auth.json`
+- **Auto-mounting** tokens from Windows host to Linux containers
+- **Auto-injecting** tokens into each agent container
+- **Auto-switching** to your ChatGPT Plus subscription
 
-### 🔍 Verify OAuth Integration
+**No configuration files needed! No environment variables to set!** The system detects your existing Codex CLI authentication and "just works".
+
+### Verify OAuth Integration
 
 **Check your subscription details:**
 ```bash
@@ -192,10 +194,10 @@ docker exec [container-name] cat ~/.codex/auth.json | head -5
 # Watch agent startup to confirm OAuth injection
 docker logs -f [agent-container-name]
 
-# Look for: "✅ OAuth tokens injected successfully"
+# Look for: "OAuth tokens injected successfully"
 ```
 
-### 🛠️ Alternative Setup Methods
+### Alternative Setup Methods
 
 **If you don't have Codex CLI installed locally:**
 
@@ -218,33 +220,56 @@ docker logs -f [agent-container-name]
    echo '{"tokens": {"access_token": "your-token"}}' > ~/.codex/auth.json
    ```
 
-### 🔧 OAuth Configuration Options
+### How Automatic OAuth Detection Works
 
-**Environment variable customization:**
+The server uses intelligent auto-detection with zero configuration:
+
 ```bash
-# Authentication preferences (optional)
-CODEX_AUTH_METHOD=auto                       # auto, api_key, or oauth
+# 1. Server starts and checks for OAuth tokens automatically
+docker-compose --profile codex-mcp up -d
+
+# 2. Detection happens in this order:
+#    ~/.codex/auth.json (Windows/Linux/Mac)
+#    $USERPROFILE/.codex/auth.json (Windows)
+#    $HOME/.codex/auth.json (Linux/Mac)
+#    Environment variables (fallback)
+
+# 3. If OAuth found: Uses ChatGPT subscription
+# 4. If no OAuth: Falls back to API key
+```
+
+**Smart path detection:**
+- **Windows**: `C:\Users\YourName\.codex\auth.json`
+- **Linux/Mac**: `~/.codex/auth.json`
+- **Docker**: Automatically mounts from host to `/app/.codex`
+
+### OAuth Configuration Options (Optional)
+
+**Override automatic detection if needed:**
+```bash
+# Authentication preferences (usually not needed)
+CODEX_AUTH_METHOD=auto                       # auto (default), api_key, or oauth
 CODEX_PREFER_OAUTH=true                      # Prefer OAuth over API key (default)
 
-# Custom OAuth directory (if not using ~/.codex)
+# Custom OAuth directory (if tokens are elsewhere)
 CODEX_AUTH_DIR=/custom/path/to/codex/dir
 
-# OAuth client settings (for auth script)
+# OAuth client settings (for manual auth script only)
 OAUTH_CLIENT_ID=codex-cli                    # OAuth client identifier
 OAUTH_CALLBACK_PORT=8765                     # Local callback server port
 OAUTH_AUTO_OPEN_BROWSER=true                 # Auto-open browser for auth
 ```
 
-### ✅ OAuth Benefits
+### OAuth Benefits
 
 **Why choose OAuth over API keys:**
-- 💰 **Use existing ChatGPT Plus subscription** (no separate billing)
-- 🚀 **Higher rate limits** compared to API keys
-- 🔒 **More secure** (tokens auto-refresh)
-- 📊 **Better quota management** through ChatGPT interface
-- 🎯 **Simplified billing** (one subscription for everything)
+- **Use existing ChatGPT Plus subscription** (no separate billing)
+- **Higher rate limits** compared to API keys
+- **More secure** (tokens auto-refresh)
+- **Better quota management** through ChatGPT interface
+- **Simplified billing** (one subscription for everything)
 
-### 🚨 Troubleshooting OAuth
+### Troubleshooting OAuth
 
 **OAuth not working? Check these:**
 
