@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  codex-mcp-server:
+    profiles: ["codex-mcp"]
+    build: .
+    container_name: codex-mcp-server
+    ports:
+      - "8210:8210"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CODEX_MODEL=${CODEX_MODEL:-gpt-5}
+      - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-20}
+      - SESSION_TIMEOUT=${SESSION_TIMEOUT:-3600}
+      - CONTAINER_CPU_LIMIT=${CONTAINER_CPU_LIMIT:-4.0}
+      - CONTAINER_MEMORY_LIMIT=${CONTAINER_MEMORY_LIMIT:-2048m}
+      - CONTAINER_NETWORK_MODE=${CONTAINER_NETWORK_MODE:-codex-mcp-network}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - PERSISTENT_MODE=true
+      - CONTAINER_MODE=true
+      - AGENT_DATA_PATH=/app/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - codex_agent_data:/app/data
+      - codex_server_config:/app/config
+      - codex_sessions:/app/sessions
+    networks:
+      - codex-network
+    restart: unless-stopped
+    depends_on:
+      - codex-data-init
+    privileged: true
+    user: root
+
+  # Data initialization service to ensure proper permissions
+  codex-data-init:
+    profiles: ["codex-mcp"]
+    image: alpine:latest
+    container_name: codex-data-init
+    volumes:
+      - codex_agent_data:/data
+      - codex_server_config:/config
+    command: >
+      sh -c "
+        mkdir -p /data/agents /data/metadata /config &&
+        chmod -R 755 /data /config &&
+        echo 'Persistent data directories initialized'
+      "
+    networks:
+      - codex-network
+
+volumes:
+  codex_sessions:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/sessions
+  codex_agent_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/agents
+  codex_server_config:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./config
+
+networks:
+  codex-network:
+    driver: bridge
+    name: codex-mcp-network

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__archon__find_projects",
+      "mcp__archon__rag_search_knowledge_base",
+      "mcp__archon__manage_task",
+      "mcp__archon__rag_search_code_examples"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

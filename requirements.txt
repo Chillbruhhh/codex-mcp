@@ -1,0 +1,26 @@
+# Core MCP Server Framework
+fastmcp>=2.0.0
+fastapi>=0.100.0
+
+# Container and Process Management
+docker>=7.0.0
+
+# Data Validation and Serialization
+pydantic>=2.0.0
+
+# Configuration Management
+tomli>=2.0.0
+tomli-w>=1.0.0
+
+# Async HTTP Client (for Docker API)
+aiohttp>=3.9.0
+httpx>=0.25.0
+
+# Logging and Monitoring
+structlog>=23.0.0
+
+# Environment Variable Management
+python-dotenv>=1.0.0
+
+# Type Checking and Development
+typing-extensions>=4.0.0
