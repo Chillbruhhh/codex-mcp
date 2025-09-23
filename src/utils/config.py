@@ -45,11 +45,27 @@ class CodexConfig:
 
 
 @dataclass
+class OAuthConfig:
+    """OAuth-specific configuration."""
+    client_id: str = "codex-cli"
+    authorization_endpoint: str = "https://auth.openai.com/oauth/authorize"
+    token_endpoint: str = "https://auth.openai.com/oauth/token"
+    revoke_endpoint: str = "https://auth.openai.com/oauth/revoke"
+    callback_port: int = 8765
+    callback_timeout: int = 300  # 5 minutes
+    scope: str = "openai-api"
+    auto_open_browser: bool = True
+    token_storage_path: Optional[str] = None  # Defaults to ~/.codex/auth.json
+
+
+@dataclass
 class AuthConfig:
-    """Authentication configuration - OpenAI only."""
+    """Authentication configuration - OpenAI and OAuth."""
     openai_api_key: Optional[str] = None
     chatgpt_oauth_token: Optional[str] = None
     auth_method: str = "auto"  # "auto", "api_key", or "oauth"
+    prefer_oauth: bool = True  # Prefer OAuth over API key when both available
+    oauth: OAuthConfig = field(default_factory=OAuthConfig)
 
 
 @dataclass
@@ -109,10 +125,22 @@ def _load_from_env(config: Config) -> None:
     config.codex.provider = os.getenv("CODEX_PROVIDER", config.codex.provider)
     config.codex.approval_mode = os.getenv("CODEX_APPROVAL_MODE", config.codex.approval_mode)
 
-    # Auth config - OpenAI only
+    # Auth config - OpenAI and OAuth
     config.auth.openai_api_key = os.getenv("OPENAI_API_KEY")
     config.auth.chatgpt_oauth_token = os.getenv("CHATGPT_OAUTH_TOKEN")
     config.auth.auth_method = os.getenv("CODEX_AUTH_METHOD", "auto")
+    config.auth.prefer_oauth = os.getenv("CODEX_PREFER_OAUTH", "true").lower() == "true"
+
+    # OAuth-specific config
+    config.auth.oauth.client_id = os.getenv("OAUTH_CLIENT_ID", config.auth.oauth.client_id)
+    config.auth.oauth.authorization_endpoint = os.getenv("OAUTH_AUTHORIZATION_ENDPOINT", config.auth.oauth.authorization_endpoint)
+    config.auth.oauth.token_endpoint = os.getenv("OAUTH_TOKEN_ENDPOINT", config.auth.oauth.token_endpoint)
+    config.auth.oauth.revoke_endpoint = os.getenv("OAUTH_REVOKE_ENDPOINT", config.auth.oauth.revoke_endpoint)
+    config.auth.oauth.callback_port = int(os.getenv("OAUTH_CALLBACK_PORT", str(config.auth.oauth.callback_port)))
+    config.auth.oauth.callback_timeout = int(os.getenv("OAUTH_CALLBACK_TIMEOUT", str(config.auth.oauth.callback_timeout)))
+    config.auth.oauth.scope = os.getenv("OAUTH_SCOPE", config.auth.oauth.scope)
+    config.auth.oauth.auto_open_browser = os.getenv("OAUTH_AUTO_OPEN_BROWSER", "true").lower() == "true"
+    config.auth.oauth.token_storage_path = os.getenv("OAUTH_TOKEN_STORAGE_PATH")
 
 
 def _load_from_file(config: Config, config_path: str) -> None:
@@ -139,7 +167,12 @@ def _load_from_file(config: Config, config_path: str) -> None:
 
         if "auth" in data:
             for key, value in data["auth"].items():
-                if hasattr(config.auth, key):
+                if key == "oauth" and isinstance(value, dict):
+                    # Handle nested OAuth configuration
+                    for oauth_key, oauth_value in value.items():
+                        if hasattr(config.auth.oauth, oauth_key):
+                            setattr(config.auth.oauth, oauth_key, oauth_value)
+                elif hasattr(config.auth, key):
                     setattr(config.auth, key, value)
 
     except Exception as e:

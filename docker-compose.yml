@@ -7,8 +7,11 @@ services:
     container_name: codex-mcp-server
     ports:
       - "8210:8210"
+      # OAuth callback port (configurable via OAUTH_CALLBACK_PORT)
+      - "${OAUTH_CALLBACK_PORT:-8765}:${OAUTH_CALLBACK_PORT:-8765}"
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CHATGPT_OAUTH_TOKEN=${CHATGPT_OAUTH_TOKEN}
       - CODEX_MODEL=${CODEX_MODEL:-gpt-5}
       - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-20}
       - SESSION_TIMEOUT=${SESSION_TIMEOUT:-3600}
@@ -20,11 +23,23 @@ services:
       - CONTAINER_MODE=true
       - AGENT_DATA_PATH=/app/data
       - DOCKER_HOST=unix:///var/run/docker.sock
+      # OAuth Configuration
+      - CODEX_AUTH_METHOD=${CODEX_AUTH_METHOD:-auto}
+      - CODEX_PREFER_OAUTH=${CODEX_PREFER_OAUTH:-true}
+      - OAUTH_CLIENT_ID=${OAUTH_CLIENT_ID:-codex-cli}
+      - OAUTH_CALLBACK_PORT=${OAUTH_CALLBACK_PORT:-8765}
+      - OAUTH_CALLBACK_TIMEOUT=${OAUTH_CALLBACK_TIMEOUT:-300}
+      - OAUTH_AUTO_OPEN_BROWSER=${OAUTH_AUTO_OPEN_BROWSER:-true}
+      - OAUTH_TOKEN_STORAGE_PATH=${OAUTH_TOKEN_STORAGE_PATH}
+      - CODEX_AUTH_DIR=${CODEX_AUTH_DIR:-${USERPROFILE:-${HOME}}/.codex}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - codex_agent_data:/app/data
       - codex_server_config:/app/config
       - codex_sessions:/app/sessions
+      # OAuth token storage - mount host ~/.codex to container for token access
+      # Windows Docker Desktop automatically translates C: paths to /c/ in Linux container
+      - ${USERPROFILE}/.codex:/app/.codex:ro
     networks:
       - codex-network
     restart: unless-stopped

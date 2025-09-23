@@ -24,3 +24,6 @@ python-dotenv>=1.0.0
 
 # Type Checking and Development
 typing-extensions>=4.0.0
+
+# OAuth Flow Dependencies
+# webbrowser is a built-in Python module

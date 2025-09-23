@@ -94,6 +94,7 @@ class CodexContainerManager:
         self.persistence_manager = AgentPersistenceManager(data_path)
         self.active_sessions: Dict[str, ContainerSession] = {}
         self.base_image = "codex-mcp-base"
+        self._oauth_tokens: Optional[Dict[str, Any]] = None
 
         # Check for persistent mode
         self.persistent_mode = os.getenv("PERSISTENT_MODE", "false").lower() == "true"
@@ -743,14 +744,26 @@ CMD ["bash", "/app/logging_startup.sh"]
             abs_config_dir = os.path.abspath(session.config_dir)
             abs_workspace_dir = os.path.abspath(session.workspace_dir)
 
+            # Prepare volume mounts
+            volume_mounts = {
+                abs_config_dir: {"bind": "/app/config", "mode": "ro"},
+                abs_workspace_dir: {"bind": "/app/workspace", "mode": "rw"}
+            }
+
+            # Add OAuth token directory mount if OAuth tokens are available
+            oauth_dir = self._get_oauth_directory()
+            if oauth_dir and os.path.exists(oauth_dir):
+                abs_oauth_dir = os.path.abspath(oauth_dir)
+                volume_mounts[abs_oauth_dir] = {"bind": "/app/.codex", "mode": "ro"}
+                logger.debug("Adding OAuth token directory mount",
+                           host_path=abs_oauth_dir,
+                           container_path="/app/.codex")
+
             container = self.docker_client.containers.create(
                 image=self.base_image,
                 name=session.container_name,
                 environment=environment,
-                volumes={
-                    abs_config_dir: {"bind": "/app/config", "mode": "ro"},
-                    abs_workspace_dir: {"bind": "/app/workspace", "mode": "rw"}
-                },
+                volumes=volume_mounts,
                 working_dir="/app/workspace",
                 user="codex",
                 network_mode=self.config.container.network_mode,
@@ -858,17 +871,111 @@ CMD ["bash", "/app/logging_startup.sh"]
         """
         Setup Codex CLI authentication in the container.
 
-        Creates the required ~/.codex/auth.json file with API key.
-        This is the key to making Codex CLI work with the Responses API.
+        Handles both OAuth tokens (if mounted) and API key authentication.
         """
         try:
+            # Check if we have OAuth tokens stored from the main container
+            if hasattr(self, '_oauth_tokens') and self._oauth_tokens:
+                logger.info("Using stored OAuth tokens from main container", session_id=session.session_id)
+
+                if self._oauth_tokens.get("tokens") and self._oauth_tokens["tokens"].get("access_token"):
+                    logger.info("✅ Injecting OAuth tokens for ChatGPT subscription authentication",
+                               session_id=session.session_id,
+                               access_token_preview=self._oauth_tokens["tokens"]["access_token"][:20] + "...")
+
+                    # Create OAuth auth file in agent container
+                    auth_json = json.dumps(self._oauth_tokens)
+                    auth_setup_cmd = f'mkdir -p ~/.codex && echo \'{auth_json}\' > ~/.codex/auth.json'
+
+                    auth_result = container.exec_run(
+                        cmd=["bash", "-c", auth_setup_cmd],
+                        user="codex"
+                    )
+
+                    if auth_result.exit_code == 0:
+                        logger.info("OAuth tokens injected successfully")
+                        session.auth_setup_complete = True
+                        return
+                    else:
+                        logger.warning("Failed to inject OAuth tokens",
+                                     error=auth_result.output.decode('utf-8', errors='ignore'))
+                elif self._oauth_tokens.get("OPENAI_API_KEY"):
+                    logger.info("Using stored API key authentication", session_id=session.session_id)
+
+                    # Create API key auth file in agent container
+                    auth_json = json.dumps(self._oauth_tokens)
+                    auth_setup_cmd = f'mkdir -p ~/.codex && echo \'{auth_json}\' > ~/.codex/auth.json'
+
+                    auth_result = container.exec_run(
+                        cmd=["bash", "-c", auth_setup_cmd],
+                        user="codex"
+                    )
+
+                    if auth_result.exit_code == 0:
+                        logger.info("API key authentication injected successfully")
+                        session.auth_setup_complete = True
+                        return
+                    else:
+                        logger.warning("Failed to inject API key authentication",
+                                     error=auth_result.output.decode('utf-8', errors='ignore'))
+
+            # Check if OAuth tokens are mounted (for non-container environments)
+            oauth_check = container.exec_run(
+                cmd=["test", "-f", "/app/.codex/auth.json"],
+                user="codex"
+            )
+
+            if oauth_check.exit_code == 0:
+                logger.info("Found OAuth auth.json file mounted in container")
+                # Copy OAuth tokens to writable location for Codex CLI
+                copy_result = container.exec_run(
+                    cmd=["bash", "-c", "mkdir -p ~/.codex && cp /app/.codex/auth.json ~/.codex/auth.json"],
+                    user="codex"
+                )
+
+                if copy_result.exit_code == 0:
+                    logger.info("OAuth tokens copied from mounted directory")
+                    session.auth_setup_complete = True
+                    return
+                else:
+                    logger.warning("Failed to copy OAuth tokens from mounted directory",
+                                 error=copy_result.output.decode('utf-8', errors='ignore'))
+
+            # Fallback to API key authentication
             api_key = session.environment.get("OPENAI_API_KEY", "")
-            if not api_key:
-                raise ContainerExecutionError("No API key available for authentication")
+            access_token = session.environment.get("OPENAI_ACCESS_TOKEN", "")
 
-            # Use the exact approach that we confirmed works manually
-            auth_setup_cmd = f'mkdir -p ~/.codex && echo \'{{"OPENAI_API_KEY":"{api_key}","tokens":null,"last_refresh":null}}\' > ~/.codex/auth.json'
+            if access_token:
+                # Use OAuth access token for authentication
+                auth_content = {
+                    "OPENAI_API_KEY": None,
+                    "tokens": {
+                        "access_token": access_token,
+                        "token_type": "Bearer"
+                    },
+                    "last_refresh": None
+                }
+                auth_json = json.dumps(auth_content)
+                auth_setup_cmd = f'mkdir -p ~/.codex && echo \'{auth_json}\' > ~/.codex/auth.json'
 
+                logger.debug("Setting up OAuth access token authentication")
+
+            elif api_key:
+                # Use API key for authentication
+                auth_content = {
+                    "OPENAI_API_KEY": api_key,
+                    "tokens": None,
+                    "last_refresh": None
+                }
+                auth_json = json.dumps(auth_content)
+                auth_setup_cmd = f'mkdir -p ~/.codex && echo \'{auth_json}\' > ~/.codex/auth.json'
+
+                logger.debug("Setting up API key authentication")
+
+            else:
+                raise ContainerExecutionError("No authentication method available (no API key or OAuth token)")
+
+            # Execute authentication setup
             auth_result = container.exec_run(
                 cmd=["bash", "-c", auth_setup_cmd],
                 user="codex",
@@ -1691,6 +1798,79 @@ Session: {session.container_id[:12]}... | Agent: {session.agent_id}"""
             "total_removed": len(removed_agents),
             "total_failed": len(failed_removals)
         }
+
+    def _get_oauth_directory(self) -> Optional[str]:
+        """
+        Get the OAuth token directory path if it exists.
+
+        Returns:
+            Path to OAuth directory or None if not available
+        """
+        try:
+            # When running in container mode, read OAuth tokens from main container
+            # and inject them into agent containers rather than mounting
+            container_oauth_path = Path("/app/.codex")
+            if container_oauth_path.exists() and (container_oauth_path / "auth.json").exists():
+                logger.info("Found OAuth directory in main container mount", path=str(container_oauth_path))
+
+                # Store OAuth tokens for injection into agent containers
+                try:
+                    with open(container_oauth_path / "auth.json") as f:
+                        auth_data = json.load(f)
+
+                    if auth_data.get("tokens") and auth_data["tokens"].get("access_token"):
+                        logger.info("Verified OAuth tokens - will inject into agent containers")
+                        # Store the OAuth data for injection, don't mount the directory
+                        self._oauth_tokens = auth_data
+                        return None  # Don't mount, use injection approach
+                    elif auth_data.get("OPENAI_API_KEY"):
+                        logger.info("Found API key authentication - will inject into agent containers")
+                        self._oauth_tokens = auth_data
+                        return None  # Don't mount, use injection approach
+
+                except json.JSONDecodeError:
+                    logger.warning("Mounted auth.json exists but is not valid JSON")
+
+            # Check the actual path where your OAuth tokens are stored (host system)
+            codex_home = Path.home() / ".codex"
+            if codex_home.exists() and (codex_home / "auth.json").exists():
+                logger.info("Found OAuth directory with auth.json", path=str(codex_home))
+
+                # Verify it contains OAuth tokens
+                try:
+                    with open(codex_home / "auth.json") as f:
+                        auth_data = json.load(f)
+
+                    if auth_data.get("tokens") and auth_data["tokens"].get("access_token"):
+                        logger.info("Verified OAuth tokens in auth.json")
+                        return str(codex_home)
+                    elif auth_data.get("OPENAI_API_KEY"):
+                        logger.info("Found API key authentication in auth.json")
+                        return str(codex_home)
+                    else:
+                        logger.warning("auth.json exists but format is unclear")
+                        return str(codex_home)  # Mount anyway, let container handle it
+
+                except json.JSONDecodeError:
+                    logger.warning("auth.json exists but is not valid JSON")
+                    return None
+
+                return str(codex_home)
+
+            # Also check for explicitly set OAuth token storage path
+            oauth_path = os.getenv("CODEX_OAUTH_PATH")
+            if oauth_path:
+                oauth_dir = Path(oauth_path).parent
+                if oauth_dir.exists():
+                    logger.debug("Found custom OAuth directory", path=str(oauth_dir))
+                    return str(oauth_dir)
+
+            logger.debug("No OAuth directory found")
+            return None
+
+        except Exception as e:
+            logger.warning("Error checking OAuth directory", error=str(e))
+            return None
 
     def _calculate_cpu_percent(self, stats: Dict[str, Any]) -> float:
         """Calculate CPU usage percentage from Docker stats."""

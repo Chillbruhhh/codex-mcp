@@ -18,8 +18,16 @@ from enum import Enum
 
 import structlog
 
-from .utils.config import Config
-from .utils.logging import LogContext
+try:
+    from .utils.config import Config
+    from .utils.logging import LogContext
+    from .oauth_manager import OAuthTokenManager, OAuthTokens
+    from .oauth_flow import OAuthFlow
+except ImportError:
+    from utils.config import Config
+    from utils.logging import LogContext
+    from oauth_manager import OAuthTokenManager, OAuthTokens
+    from oauth_flow import OAuthFlow
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +44,7 @@ class AuthCredentials:
     method: AuthMethod
     api_key: Optional[str] = None
     oauth_token: Optional[str] = None
+    oauth_tokens: Optional[OAuthTokens] = None
     environment_vars: Dict[str, str] = None
 
     def __post_init__(self):
@@ -68,6 +77,8 @@ class CodexAuthManager:
         """
         self.config = config
         self._validated_credentials: Dict[str, AuthCredentials] = {}
+        self.oauth_manager = OAuthTokenManager()
+        self.oauth_flow = OAuthFlow(oauth_manager=self.oauth_manager)
 
         logger.info("Authentication manager initialized",
                    supported_methods=["openai_api_key", "chatgpt_oauth"])
@@ -115,18 +126,18 @@ class CodexAuthManager:
 
     def _has_chatgpt_oauth(self) -> bool:
         """Check if ChatGPT OAuth authentication is available."""
-        # In the official Codex CLI, OAuth tokens are stored in ~/.codex/
-        # For our containerized version, we only use OAuth if explicitly provided
-        # to avoid OAuth flow issues in container environments
-
+        # Check for explicitly provided OAuth token via environment
         oauth_token = os.getenv("CHATGPT_OAUTH_TOKEN")
         if oauth_token:
-            logger.debug("ChatGPT OAuth token found")
+            logger.debug("ChatGPT OAuth token found in environment")
             return True
 
-        # Don't attempt OAuth flow in containers unless token is explicitly provided
-        # This prevents the OAuth authentication process from failing in container environments
-        logger.debug("No OAuth token found, OAuth not available")
+        # Check for stored OAuth tokens using OAuth manager
+        if self.oauth_manager.has_valid_tokens():
+            logger.debug("Valid OAuth tokens found in storage")
+            return True
+
+        logger.debug("No OAuth authentication available")
         return False
 
     def _get_openai_api_key(self) -> Optional[str]:
@@ -210,21 +221,32 @@ class CodexAuthManager:
 
     async def _create_oauth_credentials(self) -> AuthCredentials:
         """Create credentials using ChatGPT OAuth."""
-        oauth_token = os.getenv("CHATGPT_OAUTH_TOKEN")
-
         logger.debug("Creating OAuth credentials")
+
+        # Try to get valid tokens from OAuth manager
+        oauth_tokens = await self.oauth_manager.get_valid_tokens()
+
+        # Fallback to environment variable
+        oauth_token = os.getenv("CHATGPT_OAUTH_TOKEN")
 
         env_vars = {
             "CODEX_AUTH_METHOD": "oauth"
         }
 
-        # If we have an OAuth token, pass it along
-        if oauth_token:
+        # Use OAuth tokens if available
+        if oauth_tokens:
+            env_vars["OPENAI_ACCESS_TOKEN"] = oauth_tokens.access_token
+            logger.debug("Using OAuth manager tokens")
+        elif oauth_token:
             env_vars["CHATGPT_OAUTH_TOKEN"] = oauth_token
+            logger.debug("Using environment OAuth token")
+        else:
+            raise AuthenticationError("No valid OAuth tokens available")
 
         return AuthCredentials(
             method=AuthMethod.CHATGPT_OAUTH,
             oauth_token=oauth_token,
+            oauth_tokens=oauth_tokens,
             environment_vars=env_vars
         )
 
@@ -378,7 +400,191 @@ sensitivePatterns = []
                 "message": "No valid authentication configured"
             }
 
+    async def start_oauth_flow(
+        self,
+        open_browser: bool = True,
+        timeout: int = 300
+    ) -> Optional[OAuthTokens]:
+        """
+        Start interactive OAuth flow for ChatGPT subscription authentication.
+
+        Args:
+            open_browser: Whether to automatically open browser
+            timeout: Timeout in seconds for user authorization
+
+        Returns:
+            OAuthTokens if successful, None otherwise
+        """
+        try:
+            logger.info("Starting OAuth authentication flow",
+                       open_browser=open_browser,
+                       timeout=timeout)
+
+            tokens = await self.oauth_flow.run_oauth_flow(
+                open_browser=open_browser,
+                timeout=timeout
+            )
+
+            if tokens:
+                logger.info("OAuth authentication successful")
+                # Clear any cached credentials to force refresh
+                self._validated_credentials.clear()
+            else:
+                logger.error("OAuth authentication failed")
+
+            return tokens
+
+        except Exception as e:
+            logger.error("OAuth flow error", error=str(e))
+            raise AuthenticationError(f"OAuth flow failed: {e}")
+
+    async def get_oauth_authorization_url(self) -> str:
+        """
+        Get OAuth authorization URL for manual authentication flow.
+
+        Returns:
+            Authorization URL that user should visit
+        """
+        try:
+            auth_url = await self.oauth_flow.get_authorization_url()
+            logger.info("OAuth authorization URL generated")
+            return auth_url
+
+        except Exception as e:
+            logger.error("Failed to generate OAuth URL", error=str(e))
+            raise AuthenticationError(f"Failed to generate OAuth URL: {e}")
+
+    async def complete_oauth_flow(self, timeout: int = 300) -> Optional[OAuthTokens]:
+        """
+        Complete OAuth flow after manual authorization.
+
+        Args:
+            timeout: Timeout in seconds to wait for callback
+
+        Returns:
+            OAuthTokens if successful, None otherwise
+        """
+        try:
+            logger.info("Waiting for OAuth callback", timeout=timeout)
+
+            authorization_code = await self.oauth_flow.wait_for_callback(timeout)
+            if not authorization_code:
+                logger.error("OAuth callback timeout or failure")
+                return None
+
+            # The callback handling in oauth_flow should have already exchanged
+            # the code for tokens, so we can load them from the manager
+            tokens = await self.oauth_manager.load_tokens()
+
+            if tokens:
+                logger.info("OAuth flow completed successfully")
+                # Clear cached credentials to force refresh
+                self._validated_credentials.clear()
+            else:
+                logger.error("Failed to load tokens after OAuth completion")
+
+            return tokens
+
+        except Exception as e:
+            logger.error("OAuth completion error", error=str(e))
+            raise AuthenticationError(f"OAuth completion failed: {e}")
+
+    async def revoke_oauth_tokens(self) -> bool:
+        """
+        Revoke stored OAuth tokens and clear authentication.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            logger.info("Revoking OAuth tokens")
+
+            success = await self.oauth_manager.revoke_tokens()
+
+            if success:
+                # Clear cached credentials
+                self._validated_credentials.clear()
+                logger.info("OAuth tokens revoked successfully")
+            else:
+                logger.warning("OAuth token revocation had issues")
+
+            return success
+
+        except Exception as e:
+            logger.error("OAuth revocation error", error=str(e))
+            return False
+
+    def get_oauth_status(self) -> Dict[str, Any]:
+        """
+        Get OAuth authentication status and token information.
+
+        Returns:
+            Dictionary with OAuth status information
+        """
+        try:
+            token_info = self.oauth_manager.get_token_info()
+            flow_info = self.oauth_flow.get_flow_info()
+
+            return {
+                "oauth_available": self._has_chatgpt_oauth(),
+                "token_info": token_info,
+                "flow_info": flow_info,
+                "auth_method_priority": {
+                    "preferred": "oauth" if self._has_chatgpt_oauth() else "api_key",
+                    "api_key_available": self._has_valid_api_key(),
+                    "oauth_available": self._has_chatgpt_oauth()
+                }
+            }
+
+        except Exception as e:
+            logger.error("Failed to get OAuth status", error=str(e))
+            return {
+                "oauth_available": False,
+                "error": str(e)
+            }
+
+    async def ensure_authentication(self, force_oauth: bool = False) -> AuthMethod:
+        """
+        Ensure authentication is available, triggering OAuth flow if needed.
+
+        Args:
+            force_oauth: Force OAuth flow even if API key is available
+
+        Returns:
+            AuthMethod that was successfully configured
+
+        Raises:
+            AuthenticationError: If no authentication method can be configured
+        """
+        try:
+            # If OAuth is forced or preferred and not available, start OAuth flow
+            if force_oauth or (not self._has_chatgpt_oauth() and not self._has_valid_api_key()):
+                logger.info("Starting OAuth flow to ensure authentication",
+                           force_oauth=force_oauth)
+
+                tokens = await self.start_oauth_flow()
+                if tokens:
+                    return AuthMethod.CHATGPT_OAUTH
+
+            # Check what's available now
+            if self._has_chatgpt_oauth():
+                return AuthMethod.CHATGPT_OAUTH
+            elif self._has_valid_api_key():
+                return AuthMethod.API_KEY
+            else:
+                raise AuthenticationError(
+                    "No authentication method available. Please provide either:\n"
+                    "1. OpenAI API key via OPENAI_API_KEY environment variable\n"
+                    "2. Complete OAuth authentication flow"
+                )
+
+        except Exception as e:
+            logger.error("Authentication setup failed", error=str(e))
+            raise AuthenticationError(f"Authentication setup failed: {e}")
+
     async def cleanup(self) -> None:
         """Clean up authentication manager resources."""
         self._validated_credentials.clear()
+        # Note: OAuth manager and flow don't need explicit cleanup
+        # as they use context managers for resource management
         logger.info("Authentication manager cleaned up")
