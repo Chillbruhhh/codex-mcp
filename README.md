@@ -104,15 +104,9 @@ Add this to your Claude Desktop MCP settings:
 ```json
 {
   "mcpServers": {
-    "codex-mcp": {
-      "command": "npx",
-      "args": [
-        "@modelcontextprotocol/inspector",
-        "http://localhost:8210"
-      ],
-      "env": {
-        "NODE_TLS_REJECT_UNAUTHORIZED": "0"
-      }
+    "codex-cli": {
+      "type": "sse",
+      "url": "http://localhost:8210/sse"
     }
   }
 }
