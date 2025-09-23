@@ -104,7 +104,7 @@ Add this to your Claude Desktop MCP settings:
 ```json
 {
   "mcpServers": {
-    "codex-cli": {
+    "codex-mcp": {
       "type": "sse",
       "url": "http://localhost:8210/sse"
     }
