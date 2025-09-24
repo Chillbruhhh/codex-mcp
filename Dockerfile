@@ -30,6 +30,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 COPY server.py .
+COPY entrypoint.sh .
+
+# Ensure proper line endings and permissions for entrypoint
+RUN chmod +x entrypoint.sh && \
+    # Convert any Windows line endings to Unix (if needed)
+    sed -i 's/\r$//' entrypoint.sh || true
 
 # Create app directories with proper permissions
 RUN mkdir -p /app/data /app/config /app/sessions \
@@ -42,5 +48,5 @@ EXPOSE 8210
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD python -c "import asyncio; from src.mcp_server import health_check; asyncio.run(health_check())"
 
-# Start the MCP server
-CMD ["python", "server.py"]
+# Start the MCP server - try entrypoint script first, fallback to inline commands
+ENTRYPOINT ["bash", "-c", "if [ -f ./entrypoint.sh ] && [ -x ./entrypoint.sh ]; then exec ./entrypoint.sh \"$@\"; else mkdir -p /app/data/agents /app/data/metadata /app/config /app/sessions && chmod -R 755 /app/data /app/config /app/sessions && echo 'Codex CLI MCP Server starting...' && exec python server.py \"$@\"; fi"]

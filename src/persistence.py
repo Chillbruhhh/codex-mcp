@@ -39,7 +39,8 @@ class AgentContainerInfo:
     status: ContainerStatus
     workspace_path: str
     config_path: str
-    model: str = "gpt-5"
+    model: str = "gpt-5-codex"
+    reasoning: str = "medium"
     provider: str = "openai"
     approval_mode: str = "suggest"
 
@@ -148,7 +149,8 @@ class AgentPersistenceManager:
         container_name: str,
         workspace_path: str,
         config_path: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
+        reasoning: str = "medium",
         provider: str = "openai",
         approval_mode: str = "suggest"
     ) -> None:
@@ -162,6 +164,7 @@ class AgentPersistenceManager:
             workspace_path: Path to agent's workspace
             config_path: Path to agent's config
             model: Codex model to use
+            reasoning: Reasoning level for GPT-5 models (low, medium, high)
             provider: AI provider
             approval_mode: Approval mode for Codex
         """
@@ -178,6 +181,7 @@ class AgentPersistenceManager:
                 workspace_path=workspace_path,
                 config_path=config_path,
                 model=model,
+                reasoning=reasoning,
                 provider=provider,
                 approval_mode=approval_mode
             )

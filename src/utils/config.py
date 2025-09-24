@@ -14,6 +14,47 @@ import tomli
 from dotenv import load_dotenv
 
 
+# Valid GPT-5 models and reasoning levels
+VALID_GPT5_MODELS = {
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5-nano",
+    "gpt-5-codex"
+}
+
+VALID_REASONING_LEVELS = {
+    "low",
+    "medium",
+    "high"
+}
+
+
+def validate_codex_config(config: 'CodexConfig') -> None:
+    """
+    Validate Codex configuration with strict model and reasoning checks.
+
+    Args:
+        config: CodexConfig instance to validate
+
+    Raises:
+        ValueError: If model or reasoning configuration is invalid
+    """
+    # Strict model validation - no fallbacks
+    if config.model not in VALID_GPT5_MODELS:
+        raise ValueError(
+            f"Invalid CODEX_MODEL '{config.model}'. "
+            f"Must be one of: {', '.join(sorted(VALID_GPT5_MODELS))}. "
+            f"No fallback models are supported."
+        )
+
+    # Strict reasoning validation
+    if config.reasoning not in VALID_REASONING_LEVELS:
+        raise ValueError(
+            f"Invalid CODEX_REASONING '{config.reasoning}'. "
+            f"Must be one of: {', '.join(sorted(VALID_REASONING_LEVELS))}"
+        )
+
+
 @dataclass
 class ServerConfig:
     """Main server configuration."""
@@ -37,7 +78,8 @@ class ContainerConfig:
 @dataclass
 class CodexConfig:
     """Codex CLI configuration."""
-    model: str = "gpt-5"  # Codex CLI only supports GPT-5
+    model: str = "gpt-5-codex"  # Default to preferred model
+    reasoning: str = "medium"  # Reasoning level: low, medium, high
     provider: str = "openai"
     approval_mode: str = "suggest"
     error_mode: str = "ask-user"
@@ -99,6 +141,9 @@ def load_config(config_path: Optional[str] = None) -> Config:
     if config_path and Path(config_path).exists():
         _load_from_file(config, config_path)
 
+    # Validate Codex configuration with strict checks
+    validate_codex_config(config.codex)
+
     return config
 
 
@@ -122,6 +167,7 @@ def _load_from_env(config: Config) -> None:
 
     # Codex config
     config.codex.model = os.getenv("CODEX_MODEL", config.codex.model)
+    config.codex.reasoning = os.getenv("CODEX_REASONING", config.codex.reasoning)
     config.codex.provider = os.getenv("CODEX_PROVIDER", config.codex.provider)
     config.codex.approval_mode = os.getenv("CODEX_APPROVAL_MODE", config.codex.approval_mode)
 

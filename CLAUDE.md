@@ -346,6 +346,8 @@ archon:manage_task(
 
 > **Project-specific rules and guidelines for Claude Code when working on the Codex CLI MCP Server project. These rules enforce the golden principles from our workflow while maintaining project-specific context.**
 
+## Store all Test's in the test/ directory found in the root! 
+
 ---
 
 ## 🎯 Project Overview

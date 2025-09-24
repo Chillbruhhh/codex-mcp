@@ -50,6 +50,10 @@ class ContainerSession:
     auth_setup_complete: bool = False
     last_interaction: float = field(default_factory=time.time)
 
+    # Configuration fields
+    model: str = "gpt-5-codex"
+    reasoning: str = "medium"
+
     # Cleanup coordination fields
     cleanup_in_progress: bool = False
     cleanup_completed: bool = False
@@ -255,9 +259,10 @@ CMD ["bash", "/app/logging_startup.sh"]
         self,
         session_id: str,
         agent_id: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
         provider: str = "openai",
-        approval_mode: str = "suggest"
+        approval_mode: str = "suggest",
+        reasoning: str = "medium"
     ) -> AsyncContextManager[ContainerSession]:
         """
         Create and manage a Codex CLI container session.
@@ -268,6 +273,7 @@ CMD ["bash", "/app/logging_startup.sh"]
             model: Codex model to use
             provider: AI provider (openai, azure, etc.)
             approval_mode: Codex approval mode
+            reasoning: Reasoning level for GPT-5 models (low, medium, high)
 
         Yields:
             ContainerSession: Active container session
@@ -290,7 +296,9 @@ CMD ["bash", "/app/logging_startup.sh"]
                 session_id=session_id,
                 agent_id=agent_id,
                 container_name=f"codex-{session_id}",
-                status="creating"
+                status="creating",
+                model=model,
+                reasoning=reasoning
             )
 
             try:
@@ -301,7 +309,7 @@ CMD ["bash", "/app/logging_startup.sh"]
                 await self._create_session_directories(session)
 
                 # Generate Codex CLI configuration
-                await self._generate_codex_config(session, model, provider, approval_mode)
+                await self._generate_codex_config(session, model, provider, approval_mode, reasoning)
 
                 # Create container
                 await self._create_container(session)
@@ -349,9 +357,10 @@ CMD ["bash", "/app/logging_startup.sh"]
     async def get_or_create_persistent_agent_container(
         self,
         agent_id: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
         provider: str = "openai",
-        approval_mode: str = "suggest"
+        approval_mode: str = "suggest",
+        reasoning: str = "medium"
     ) -> ContainerSession:
         """
         Get existing or create new persistent container for an agent.
@@ -408,7 +417,8 @@ CMD ["bash", "/app/logging_startup.sh"]
                 agent_id=agent_id,
                 model=model,
                 provider=provider,
-                approval_mode=approval_mode
+                approval_mode=approval_mode,
+                reasoning=reasoning
             )
 
             logger.info("Persistent agent container ready",
@@ -463,7 +473,9 @@ CMD ["bash", "/app/logging_startup.sh"]
                 config_dir=agent_info.config_path,
                 workspace_dir=agent_info.workspace_path,
                 conversation_active=True,
-                auth_setup_complete=True  # Assume auth is already set up
+                auth_setup_complete=True,  # Assume auth is already set up
+                model=getattr(agent_info, 'model', 'gpt-5-codex'),  # Use stored or default
+                reasoning=getattr(agent_info, 'reasoning', 'medium')  # Use stored or default
             )
 
             # Update persistence manager
@@ -497,9 +509,10 @@ CMD ["bash", "/app/logging_startup.sh"]
     async def _create_new_persistent_agent_container(
         self,
         agent_id: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
         provider: str = "openai",
-        approval_mode: str = "suggest"
+        approval_mode: str = "suggest",
+        reasoning: str = "medium"
     ) -> ContainerSession:
         """
         Create a new persistent container for an agent.
@@ -509,6 +522,7 @@ CMD ["bash", "/app/logging_startup.sh"]
             model: Codex model to use
             provider: AI provider
             approval_mode: Codex approval mode
+            reasoning: Reasoning level for GPT-5 models (low, medium, high)
 
         Returns:
             ContainerSession: New container session
@@ -534,7 +548,9 @@ CMD ["bash", "/app/logging_startup.sh"]
             container_name=f"codex-agent-{agent_id}",
             config_dir=config_dir,
             workspace_dir=workspace_dir,
-            status="creating"
+            status="creating",
+            model=model,
+            reasoning=reasoning
         )
 
         try:
@@ -542,7 +558,7 @@ CMD ["bash", "/app/logging_startup.sh"]
             await self.ensure_base_image()
 
             # Generate Codex CLI configuration
-            await self._generate_codex_config(session, model, provider, approval_mode)
+            await self._generate_codex_config(session, model, provider, approval_mode, reasoning)
 
             # Create and start container
             await self._create_container(session)
@@ -559,6 +575,7 @@ CMD ["bash", "/app/logging_startup.sh"]
                 workspace_path=workspace_dir,
                 config_path=config_dir,
                 model=model,
+                reasoning=reasoning,
                 provider=provider,
                 approval_mode=approval_mode
             )
@@ -590,9 +607,10 @@ CMD ["bash", "/app/logging_startup.sh"]
         self,
         session_id: str,
         agent_id: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5-codex",
         provider: str = "openai",
-        approval_mode: str = "suggest"
+        approval_mode: str = "suggest",
+        reasoning: str = "medium"
     ) -> ContainerSession:
         """
         Create a persistent container session that doesn't auto-cleanup.
@@ -606,6 +624,7 @@ CMD ["bash", "/app/logging_startup.sh"]
             model: Codex model configuration
             provider: AI provider configuration
             approval_mode: Codex approval mode
+            reasoning: Reasoning level for GPT-5 models (low, medium, high)
 
         Returns:
             ContainerSession: Active container session
@@ -622,7 +641,9 @@ CMD ["bash", "/app/logging_startup.sh"]
             session = ContainerSession(
                 session_id=session_id,
                 agent_id=agent_id,
-                container_name=f"codex-session-{agent_id}-{int(time.time())}"
+                container_name=f"codex-session-{agent_id}-{int(time.time())}",
+                model=model,
+                reasoning=reasoning
             )
 
             try:
@@ -633,7 +654,7 @@ CMD ["bash", "/app/logging_startup.sh"]
                 await self._create_session_directories(session)
 
                 # Generate Codex CLI configuration
-                await self._generate_codex_config(session, model, provider, approval_mode)
+                await self._generate_codex_config(session, model, provider, approval_mode, reasoning)
 
                 # Create and start container
                 await self._create_container(session)
@@ -678,21 +699,21 @@ CMD ["bash", "/app/logging_startup.sh"]
         session: ContainerSession,
         model: str,
         provider: str,
-        approval_mode: str
+        approval_mode: str,
+        reasoning: str
     ) -> None:
         """Generate Codex CLI configuration for the session using auth manager."""
-        # Get session credentials with forced API key authentication
-        from .auth_manager import AuthMethod
+        # Get session credentials using configured authentication preferences
         credentials = await self.auth_manager.get_session_credentials(
-            session.session_id,
-            force_method=AuthMethod.API_KEY
+            session.session_id
         )
 
         # Generate config using auth manager
         config_content = self.auth_manager.generate_codex_config(
             credentials=credentials,
             model=model,
-            approval_mode=approval_mode
+            approval_mode=approval_mode,
+            reasoning=reasoning
         )
 
         config_path = Path(session.config_dir) / "config.toml"
@@ -717,11 +738,9 @@ CMD ["bash", "/app/logging_startup.sh"]
     async def _create_container(self, session: ContainerSession) -> None:
         """Create the Docker container for the session."""
         try:
-            # Get authentication credentials for this session with forced API key authentication
-            from .auth_manager import AuthMethod
+            # Get authentication credentials for this session using configured preferences
             credentials = await self.auth_manager.get_session_credentials(
-                session.session_id,
-                force_method=AuthMethod.API_KEY
+                session.session_id
             )
 
             # Prepare environment variables using auth manager
@@ -1041,7 +1060,7 @@ CMD ["bash", "/app/logging_startup.sh"]
                 # Log the command execution to container logs
                 try:
                     container.exec_run(
-                        cmd=["sh", "-c", f"echo 'EXEC: codex exec --model gpt-5 \"{escaped_message[:50]}...\"' > /tmp/command_log"],
+                        cmd=["sh", "-c", f"echo 'EXEC: codex exec --reasoning={session.reasoning} --model {session.model} \"{escaped_message[:50]}...\"' > /tmp/command_log"],
                         user="codex"
                     )
                 except:
@@ -1050,8 +1069,14 @@ CMD ["bash", "/app/logging_startup.sh"]
                 # Use the working exec approach we confirmed manually
                 start_time = time.time()
                 try:
+                    # Build command with reasoning flag - try different formats if one fails
+                    base_cmd = ["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--model", session.model]
+
+                    # Try reasoning flag format first (--reasoning=value)
+                    cmd_with_reasoning = base_cmd + [f"--reasoning={session.reasoning}", escaped_message]
+
                     exec_result = container.exec_run(
-                        cmd=["codex", "exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "--model", "gpt-5", escaped_message],
+                        cmd=cmd_with_reasoning,
                         user="codex",
                         workdir="/app/workspace",
                         environment=session.environment,
@@ -1062,6 +1087,28 @@ CMD ["bash", "/app/logging_startup.sh"]
                         detach=False
                     )
                     execution_time = time.time() - start_time
+
+                    # Check if reasoning flag was rejected and retry without it
+                    if exec_result.exit_code != 0:
+                        output = exec_result.output.decode('utf-8', errors='replace') if exec_result.output else ""
+                        if "unexpected argument '--reasoning'" in output or "reasoning" in output:
+                            logger.warning("Reasoning flag not supported by this Codex version, retrying without it",
+                                         session_id=session.session_id)
+
+                            # Retry without reasoning flag
+                            cmd_without_reasoning = base_cmd + [escaped_message]
+                            exec_result = container.exec_run(
+                                cmd=cmd_without_reasoning,
+                                user="codex",
+                                workdir="/app/workspace",
+                                environment=session.environment,
+                                stdout=True,
+                                stderr=True,
+                                stdin=False,
+                                tty=False,
+                                detach=False
+                            )
+                            execution_time = time.time() - start_time
 
                     if execution_time > timeout:
                         logger.warning("Codex exec exceeded timeout",

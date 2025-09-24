@@ -677,9 +677,10 @@ async def _send_to_codex(agent_id: str, prompt: str, operation_type: str) -> str
         # Get or create persistent container for this agent
         session = await container_manager.get_or_create_persistent_agent_container(
             agent_id=agent_id,
-            model="gpt-5",
-            provider="openai",
-            approval_mode="suggest"
+            model=config.codex.model,
+            provider=config.codex.provider,
+            approval_mode=config.codex.approval_mode,
+            reasoning=config.codex.reasoning
         )
 
         # Send the rich prompt to Codex

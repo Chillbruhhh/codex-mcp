@@ -85,7 +85,7 @@ class CodexAuthManager:
 
     def detect_auth_method(self) -> AuthMethod:
         """
-        Detect available authentication method.
+        Detect available authentication method based on configuration preferences.
 
         Returns:
             AuthMethod: The preferred authentication method
@@ -93,15 +93,45 @@ class CodexAuthManager:
         Raises:
             AuthenticationError: If no valid authentication is available
         """
-        # Check for OpenAI API key first (preferred for automation)
-        if self._has_valid_api_key():
-            logger.info("Using OpenAI API key authentication")
-            return AuthMethod.API_KEY
+        # Check configuration preference and auth method setting
+        auth_method_config = self.config.auth.auth_method.lower()
+        prefer_oauth = self.config.auth.prefer_oauth
 
-        # Check for ChatGPT OAuth (interactive/subscription users)
-        if self._has_chatgpt_oauth():
-            logger.info("Using ChatGPT OAuth authentication")
-            return AuthMethod.CHATGPT_OAUTH
+        # Force specific method if configured
+        if auth_method_config == "oauth":
+            if self._has_chatgpt_oauth():
+                logger.info("Using forced OAuth authentication")
+                return AuthMethod.CHATGPT_OAUTH
+            else:
+                raise AuthenticationError("OAuth authentication forced but not available")
+
+        if auth_method_config == "api_key":
+            if self._has_valid_api_key():
+                logger.info("Using forced API key authentication")
+                return AuthMethod.API_KEY
+            else:
+                raise AuthenticationError("API key authentication forced but not available")
+
+        # Auto detection based on preference (auth_method_config == "auto")
+        has_oauth = self._has_chatgpt_oauth()
+        has_api_key = self._has_valid_api_key()
+
+        if prefer_oauth:
+            # Prefer OAuth first, fallback to API key
+            if has_oauth:
+                logger.info("Using OAuth authentication (preferred)")
+                return AuthMethod.CHATGPT_OAUTH
+            elif has_api_key:
+                logger.info("Using API key authentication (OAuth not available, falling back)")
+                return AuthMethod.API_KEY
+        else:
+            # Prefer API key first, fallback to OAuth
+            if has_api_key:
+                logger.info("Using API key authentication (preferred)")
+                return AuthMethod.API_KEY
+            elif has_oauth:
+                logger.info("Using OAuth authentication (API key not available, falling back)")
+                return AuthMethod.CHATGPT_OAUTH
 
         # No authentication available
         raise AuthenticationError(
@@ -253,16 +283,18 @@ class CodexAuthManager:
     def generate_codex_config(
         self,
         credentials: AuthCredentials,
-        model: str = "gpt-5",
-        approval_mode: str = "suggest"
+        model: str = "gpt-5-codex",
+        approval_mode: str = "suggest",
+        reasoning: str = "medium"
     ) -> str:
         """
         Generate Codex CLI configuration with authentication.
 
         Args:
             credentials: Authentication credentials
-            model: Model to use (default: gpt-5)
+            model: Model to use (default: gpt-5-codex)
             approval_mode: Approval mode (default: suggest)
+            reasoning: Reasoning level for GPT-5 models (low, medium, high)
 
         Returns:
             str: TOML configuration content

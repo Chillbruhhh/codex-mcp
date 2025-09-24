@@ -12,7 +12,8 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - CHATGPT_OAUTH_TOKEN=${CHATGPT_OAUTH_TOKEN}
-      - CODEX_MODEL=${CODEX_MODEL:-gpt-5}
+      - CODEX_MODEL=${CODEX_MODEL:-gpt-5-codex}
+      - CODEX_REASONING=${CODEX_REASONING:-medium}
       - MAX_CONCURRENT_SESSIONS=${MAX_CONCURRENT_SESSIONS:-20}
       - SESSION_TIMEOUT=${SESSION_TIMEOUT:-3600}
       - CONTAINER_CPU_LIMIT=${CONTAINER_CPU_LIMIT:-4.0}
@@ -43,27 +44,8 @@ services:
     networks:
       - codex-network
     restart: unless-stopped
-    depends_on:
-      - codex-data-init
     privileged: true
     user: root
-
-  # Data initialization service to ensure proper permissions
-  codex-data-init:
-    profiles: ["codex-mcp"]
-    image: alpine:latest
-    container_name: codex-data-init
-    volumes:
-      - codex_agent_data:/data
-      - codex_server_config:/config
-    command: >
-      sh -c "
-        mkdir -p /data/agents /data/metadata /config &&
-        chmod -R 755 /data /config &&
-        echo 'Persistent data directories initialized'
-      "
-    networks:
-      - codex-network
 
 volumes:
   codex_sessions:
