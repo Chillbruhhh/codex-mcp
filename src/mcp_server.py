@@ -703,9 +703,9 @@ async def audit(
 
             logger.info("Code audit completed",
                        agent_id=agent_id,
-                       security_issues_count=len(structured_response.security_issues),
+                       security_issues_count=len(structured_response.vulnerabilities),
                        quality_issues_count=len(structured_response.quality_issues),
-                       overall_score=structured_response.overall_score,
+                       overall_security_score=structured_response.overall_security_score,
                        compliance_results_count=len(structured_response.compliance_results))
 
             return structured_response
@@ -713,27 +713,27 @@ async def audit(
         except Exception as e:
             logger.error("Code audit failed", agent_id=agent_id, error=str(e))
             return AuditResponse(
-                overall_score=0.0,
-                security_issues=[
+                overall_security_score=0,
+                overall_quality_score=0,
+                vulnerabilities=[
                     SecurityIssue(
-                        type="audit_error",
                         severity="high",
+                        category="audit_error",
+                        file="unknown",
+                        line_range="unknown",
                         description=f"Audit process failed: {str(e)}",
-                        location="unknown",
-                        remediation="Check audit parameters and try again",
-                        cwe_id=None,
-                        cvss_score=None
+                        impact="Unable to perform security analysis",
+                        recommendation="Check audit parameters and try again",
+                        cwe_id=None
                     )
                 ],
                 quality_issues=[],
                 compliance_results=[],
-                summary=f"Audit failed due to error: {str(e)}",
                 recommendations=["Verify code input and audit parameters", "Try again with smaller code samples"],
-                scan_metadata={
-                    "scan_time": time.time(),
-                    "code_lines": len(code.splitlines()) if code else 0,
-                    "status": "error"
-                }
+                risk_assessment="Unable to assess risk due to audit failure",
+                audit_summary=f"Audit failed due to error: {str(e)}",
+                files_analyzed=file_paths or ["unknown"],
+                analysis_timestamp=datetime.now(timezone.utc).isoformat()
             )
 
 
@@ -1535,24 +1535,26 @@ def _parse_audit_response(response: str, original_code: str) -> AuditResponse:
         # Check for security issues
         if any(re.search(pattern, line) for pattern in security_patterns):
             security_issues.append(SecurityIssue(
-                type="security_vulnerability",
                 severity=severity,
+                category="security_vulnerability",
+                file="analyzed_code",
+                line_range="See audit details",
                 description=line,
-                location="See audit details",
-                remediation="Follow security best practices",
-                cwe_id=None,
-                cvss_score=None
+                impact="Security vulnerability identified",
+                recommendation="Follow security best practices",
+                cwe_id=None
             ))
 
         # Check for quality issues
         elif any(re.search(pattern, line) for pattern in quality_patterns):
             quality_issues.append(QualityIssue(
-                type="code_quality",
                 severity=severity,
+                category="code_quality",
+                file="analyzed_code",
+                line_range="See audit details",
                 description=line,
-                location="See audit details",
-                suggestion="Improve code quality",
-                impact="maintainability"
+                impact="maintainability",
+                suggestion="Improve code quality"
             ))
 
     # Extract overall score (look for numbers between 0-100)
@@ -1561,10 +1563,11 @@ def _parse_audit_response(response: str, original_code: str) -> AuditResponse:
 
     # Generate compliance results based on standards mentioned
     compliance_results.append(ComplianceResult(
-        standard="General Security",
-        status="partial" if security_issues else "passed",
-        violations=len(security_issues),
-        recommendations=["Address security issues identified in audit"]
+        framework="General Security",
+        rule_id="SECURITY_001",
+        status="partial" if security_issues else "pass",
+        description="General security compliance check",
+        evidence=f"Found {len(security_issues)} security issues" if security_issues else "No security issues found"
     ))
 
     # Extract summary and recommendations
@@ -1581,18 +1584,16 @@ def _parse_audit_response(response: str, original_code: str) -> AuditResponse:
     ]
 
     return AuditResponse(
-        overall_score=overall_score,
-        security_issues=security_issues[:10],  # Limit to top 10
+        overall_security_score=int(overall_score),
+        overall_quality_score=max(0, int(overall_score - len(quality_issues) * 5)),  # Deduct for quality issues
+        vulnerabilities=security_issues[:10],  # Limit to top 10
         quality_issues=quality_issues[:10],    # Limit to top 10
         compliance_results=compliance_results,
-        summary=summary,
         recommendations=recommendations,
-        scan_metadata={
-            "scan_time": time.time(),
-            "code_lines": len(original_code.splitlines()),
-            "issues_found": len(security_issues) + len(quality_issues),
-            "status": "completed"
-        }
+        risk_assessment="Medium risk" if security_issues else "Low risk",
+        audit_summary=summary,
+        files_analyzed=["analyzed_code"],
+        analysis_timestamp=datetime.now(timezone.utc).isoformat()
     )
 
 
