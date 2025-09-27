@@ -4,7 +4,7 @@
 
 # Codex CLI MCP Server
 
-> **A streamlined Model Context Protocol server that provides AI agents with high-value code generation tools powered by OpenAI's Codex CLI. Focused on the software development workflow with just 4 essential tools.**
+> **A comprehensive Model Context Protocol server that provides AI agents with advanced code generation, auditing, and debugging tools powered by OpenAI's Codex CLI. Features 10 specialized tools covering the complete software development lifecycle.**
 
 </div>
 
@@ -15,13 +15,16 @@
 
 ## Overview
 
-This MCP server provides AI agents with **4 focused tools** that map directly to the software development workflow: **plan**, **implement**, **review**, and **fix**. Each tool is designed to maximize Codex CLI's code generation capabilities with rich context and structured responses.
+This MCP server provides AI agents with **10 comprehensive tools** covering the complete software development lifecycle: planning, implementation, review, debugging, security auditing, conversational assistance, and system management. Each tool is designed to maximize Codex CLI's capabilities with rich context and structured responses.
 
 **Perfect for agents that need:**
 - Strategic implementation planning with context awareness
 - Precise code generation with architectural guidance
 - Quality code review with actionable feedback
 - Intelligent debugging with root cause analysis
+- Comprehensive security auditing and compliance checking
+- Interactive conversational assistance and brainstorming
+- Real-time session and health monitoring
 
 ### Key Features
 
@@ -54,11 +57,16 @@ graph TB
 
 ### Prerequisites
 
-- **Docker Engine 20.10+** with Docker Compose
+- **Docker Engine 20.10+** with Docker Compose v2.0+
+- **Python 3.12+** (for development and local testing)
 - **Authentication Method** (choose one):
   - **ChatGPT Subscription** (recommended) - uses your existing ChatGPT quota
   - **OpenAI API Key** - separate billing per request
 - **Git** for cloning the repository
+- **Minimum System Requirements**:
+  - 4GB RAM (8GB recommended for multiple agents)
+  - 2 CPU cores (4 cores recommended)
+  - 10GB free disk space for containers and data
 
 ### Installation
 
@@ -157,7 +165,12 @@ npm install -g @openai/codex
 codex auth login
 ```
 
-**Step 2: Start the MCP server**
+**Step 2: Build and  the MCP server**
+```bash
+#Build the MCP Server
+docker-compose --profile codex-mcp up -d --build 
+```
+Then to start the mcp service:
 ```bash
 # The server automatically detects and uses your OAuth tokens
 docker-compose --profile codex-mcp up -d
@@ -354,9 +367,9 @@ The system creates persistent volumes for:
 
 ## MCP Tools
 
-The server provides **7 focused MCP tools** for AI agents:
+The server provides **10 comprehensive MCP tools** for AI agents:
 
-### 🎯 Core Development Workflow (4 tools)
+### Core Development Workflow (4 tools)
 - **`plan`** `(task, repo_context?, constraints?)` → `PlanResponse`
   Create structured implementation plans with file targets and architectural decisions
 
@@ -369,14 +382,24 @@ The server provides **7 focused MCP tools** for AI agents:
 - **`fix`** `(failing_tests?, error_output?, context_files?, symptoms?)` → `FixResponse`
   Debug issues with targeted fixes, root cause analysis, and prevention strategies
 
-### 📊 Session Management (2 tools)
+### Advanced Analysis Tools (3 tools)
+- **`chat`** `(message, context?, previous_messages?, reference_files?)` → `ChatResponse`
+  Interactive conversational AI assistance for brainstorming, second opinions, and guidance
+
+- **`audit`** `(code, file_paths?, focus_areas?, severity_threshold?, compliance_standards?)` → `AuditResponse`
+  Comprehensive security and quality auditing with CWE/CVE references and compliance checking
+
+- **`debug`** `(error_message, code_context?, stack_trace?, environment_info?, reproduction_steps?)` → `DebugResponse`
+  Intelligent debugging assistance with root cause analysis and multiple solution approaches
+
+### Session Management (2 tools)
 - **`list_sessions`** `(agent_id?)` → `Dict`
   List active Codex CLI sessions with status and metadata
 
 - **`get_my_session_info`** `()` → `Dict`
   Get current session details including container ID and activity status
 
-### ⚡ System Monitoring (1 tool)
+### System Monitoring (1 tool)
 - **`health_check`** `()` → `HealthCheckResponse`
   Server health status, uptime, active sessions, and system information
 
