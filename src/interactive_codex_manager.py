@@ -47,8 +47,10 @@ class InteractiveCodexManager:
     with MCP clients on their workspace files.
     """
 
-    def __init__(self):
+    def __init__(self, config=None):
         """Initialize the interactive manager."""
+        from .utils.config import get_config
+        self.config = config or get_config()
         self.active_sessions: Dict[str, InteractiveSession] = {}
 
     async def start_interactive_session(
@@ -187,7 +189,7 @@ class InteractiveCodexManager:
         self,
         session_id: str,
         message: str,
-        timeout: int = 300
+        timeout: Optional[int] = None
     ) -> str:
         """
         Send message to interactive Codex CLI session.
@@ -204,6 +206,10 @@ class InteractiveCodexManager:
             ValueError: If session not found
             Exception: If communication fails
         """
+        # Use configured timeout if not specified
+        if timeout is None:
+            timeout = self.config.server.timeouts.codex_message_timeout
+
         session = self.active_sessions.get(session_id)
         if not session:
             raise ValueError(f"Interactive session {session_id} not found")

@@ -7,11 +7,12 @@ through Docker containers with complete session isolation.
 """
 
 import asyncio
+import json
 import logging
 import os
 import time
 from typing import Any, Dict, Optional, List, Union
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastmcp import FastMCP
 from pydantic import BaseModel
@@ -135,6 +136,78 @@ class FixResponse(BaseModel):
     related_issues: List[str]
 
 
+# === New Advanced Tools Models ===
+
+class ChatResponse(BaseModel):
+    """Response model for conversational chat tool."""
+    response: str
+    suggestions: List[str]
+    follow_up_questions: List[str]
+    conversation_id: str
+    timestamp: str
+    context_used: List[str]  # What previous tool outputs were referenced
+    confidence_score: float
+
+
+class SecurityIssue(BaseModel):
+    """Represents a security vulnerability found during audit."""
+    severity: str  # "critical", "high", "medium", "low"
+    category: str  # "injection", "auth", "crypto", "xss", etc.
+    file: str
+    line_range: str
+    description: str
+    impact: str
+    recommendation: str
+    cwe_id: Optional[str] = None
+
+
+class QualityIssue(BaseModel):
+    """Represents a code quality issue found during audit."""
+    severity: str  # "major", "minor", "suggestion"
+    category: str  # "maintainability", "performance", "style", etc.
+    file: str
+    line_range: str
+    description: str
+    impact: str
+    suggestion: str
+
+
+class ComplianceResult(BaseModel):
+    """Represents compliance check result."""
+    framework: str  # "OWASP", "NIST", "PCI-DSS", etc.
+    rule_id: str
+    status: str  # "pass", "fail", "warning"
+    description: str
+    evidence: Optional[str] = None
+
+
+class AuditResponse(BaseModel):
+    """Structured response for code audit tool."""
+    overall_security_score: int  # 1-100
+    overall_quality_score: int  # 1-100
+    vulnerabilities: List[SecurityIssue]
+    quality_issues: List[QualityIssue]
+    compliance_results: List[ComplianceResult]
+    recommendations: List[str]
+    risk_assessment: str
+    audit_summary: str
+    files_analyzed: List[str]
+    analysis_timestamp: str
+
+
+class DebugResponse(BaseModel):
+    """Structured response for debug analysis tool."""
+    debugging_strategy: List[str]
+    investigation_steps: List[str]
+    potential_causes: List[str]
+    debugging_tools_suggested: List[str]
+    log_analysis: str
+    environment_checks: List[str]
+    next_actions: List[str]
+    confidence_level: str  # "high", "medium", "low"
+    estimated_time: str
+
+
 @mcp.tool()
 async def health_check() -> HealthCheckResponse:
     """
@@ -248,11 +321,15 @@ async def plan(
                    agent_id=agent_id)
 
         try:
-            direct_result = await direct_tools.plan(
-                agent_id=agent_id,
-                task=task,
-                repo_context=repo_context,
-                constraints=constraints,
+            # Add timeout protection with cancellation support
+            direct_result = await asyncio.wait_for(
+                direct_tools.plan(
+                    agent_id=agent_id,
+                    task=task,
+                    repo_context=repo_context,
+                    constraints=constraints,
+                ),
+                timeout=config.server.timeouts.tool_default_timeout
             )
 
             structured_response = _coerce_plan_response(direct_result)
@@ -266,6 +343,19 @@ async def plan(
 
             return structured_response
 
+        except asyncio.TimeoutError:
+            logger.error("Planning timed out", agent_id=agent_id,
+                        timeout=config.server.timeouts.tool_default_timeout)
+            return PlanResponse(
+                task_breakdown=["Planning operation timed out"],
+                affected_files=[],
+                implementation_approach=f"Planning timed out after {config.server.timeouts.tool_default_timeout} seconds. Please try breaking down the task into smaller components.",
+                architectural_decisions=[],
+                dependencies=[],
+                estimated_complexity="unknown",
+                gotchas=["Operation was cancelled due to timeout"],
+                integration_points=[],
+            )
         except Exception as e:
             logger.error("Planning failed", agent_id=agent_id, error=str(e))
             return PlanResponse(
@@ -317,8 +407,14 @@ async def implement(
                 task, target_files, context_files, requirements
             )
 
-            # Get implementation from Codex
-            codex_response = await _send_to_codex(agent_id, context_prompt, "implementation")
+            # Get implementation from Codex with tool timeout and cancellation support
+            codex_response = await asyncio.wait_for(
+                _send_to_codex(
+                    agent_id, context_prompt, "implementation",
+                    timeout=config.server.timeouts.tool_default_timeout
+                ),
+                timeout=config.server.timeouts.tool_default_timeout
+            )
 
             # Parse and structure the response
             structured_response = _parse_implementation_response(codex_response)
@@ -330,6 +426,17 @@ async def implement(
 
             return structured_response
 
+        except asyncio.TimeoutError:
+            logger.error("Implementation timed out", agent_id=agent_id,
+                        timeout=config.server.timeouts.tool_default_timeout)
+            return ImplementResponse(
+                changes=[],
+                dependencies_added=[],
+                tests_needed=["Task timed out - consider smaller implementation scope"],
+                integration_notes=f"Implementation timed out after {config.server.timeouts.tool_default_timeout} seconds. The task may be too complex - try breaking it down into smaller, more focused implementations.",
+                next_steps=["Break down task into smaller components", "Retry with reduced scope"],
+                warnings=["Operation was cancelled due to timeout", "Consider increasing timeout or reducing complexity"]
+            )
         except Exception as e:
             logger.error("Implementation failed", agent_id=agent_id, error=str(e))
             return ImplementResponse(
@@ -378,8 +485,11 @@ async def review(
             # Build comprehensive review context
             context_prompt = _build_review_context(content, rubric, focus_areas)
 
-            # Get review from Codex
-            codex_response = await _send_to_codex(agent_id, context_prompt, "review")
+            # Get review from Codex with tool timeout
+            codex_response = await _send_to_codex(
+                agent_id, context_prompt, "review",
+                timeout=config.server.timeouts.tool_default_timeout
+            )
 
             # Parse and structure the review
             structured_response = _parse_review_response(codex_response)
@@ -442,8 +552,11 @@ async def fix(
                 failing_tests, error_output, context_files, symptoms
             )
 
-            # Get fixes from Codex
-            codex_response = await _send_to_codex(agent_id, context_prompt, "debugging")
+            # Get fixes from Codex with tool timeout
+            codex_response = await _send_to_codex(
+                agent_id, context_prompt, "debugging",
+                timeout=config.server.timeouts.tool_default_timeout
+            )
 
             # Parse and structure the fixes
             structured_response = _parse_fix_response(codex_response)
@@ -463,6 +576,254 @@ async def fix(
                 quick_fix_available=False,
                 estimated_fix_time="unknown",
                 related_issues=[f"Fix analysis error: {str(e)}"]
+            )
+
+
+@mcp.tool()
+@session_aware_tool
+async def chat(
+    message: str,
+    context: Optional[str] = None,
+    previous_messages: Optional[List[str]] = None,
+    reference_files: Optional[List[str]] = None
+) -> ChatResponse:
+    """
+    Interactive chat tool for conversational AI assistance and brainstorming.
+
+    Provides a conversational interface for asking questions, brainstorming ideas,
+    getting second opinions, and general AI assistance. Maintains context across
+    the conversation and can reference other tool outputs.
+
+    Args:
+        message: The message or question to send to Codex
+        context: Additional context about the current task or project
+        previous_messages: List of previous messages in this conversation
+        reference_files: Files to reference for context (optional)
+
+    Returns:
+        ChatResponse: Conversational response with suggestions and follow-ups
+    """
+    agent_id = await get_session_agent_id()
+
+    with LogContext(f"chat_{agent_id}"):
+        logger.info("Processing chat request",
+                   message_length=len(message),
+                   has_context=context is not None,
+                   has_history=previous_messages is not None and len(previous_messages) > 0,
+                   reference_files_count=len(reference_files) if reference_files else 0,
+                   agent_id=agent_id)
+
+        try:
+            # Build conversational context
+            context_prompt = _build_chat_context(
+                message, context, previous_messages, reference_files
+            )
+
+            # Get response from Codex with tool timeout
+            codex_response = await _send_to_codex(
+                agent_id, context_prompt, "conversation",
+                timeout=config.server.timeouts.tool_default_timeout
+            )
+
+            # Parse and structure the chat response
+            structured_response = _parse_chat_response(codex_response, message)
+
+            logger.info("Chat response completed",
+                       agent_id=agent_id,
+                       response_length=len(structured_response.response),
+                       suggestions_count=len(structured_response.suggestions),
+                       follow_ups_count=len(structured_response.follow_up_questions))
+
+            return structured_response
+
+        except Exception as e:
+            logger.error("Chat processing failed", agent_id=agent_id, error=str(e))
+            return ChatResponse(
+                response=f"I apologize, but I encountered an error processing your message: {str(e)}",
+                conversation_id=f"error_{agent_id}_{int(time.time())}",
+                suggestions=["Please try rephrasing your question", "Check your connection and try again"],
+                follow_up_questions=[],
+                timestamp=datetime.now(timezone.utc).isoformat(),
+                context_used=[context] if context else [],
+                confidence_score=0.0
+            )
+
+
+@mcp.tool()
+@session_aware_tool
+async def audit(
+    code: str,
+    file_paths: Optional[List[str]] = None,
+    focus_areas: Optional[List[str]] = None,
+    severity_threshold: Optional[str] = "medium",
+    compliance_standards: Optional[List[str]] = None
+) -> AuditResponse:
+    """
+    Comprehensive code security and quality audit tool.
+
+    Analyzes code for security vulnerabilities, quality issues, compliance violations,
+    and best practice adherence. Provides detailed findings with severity levels
+    and actionable remediation guidance.
+
+    Args:
+        code: Code content to audit (can be single file or multiple files)
+        file_paths: List of file paths being audited (for context)
+        focus_areas: Specific areas to focus on (e.g., "security", "performance", "maintainability")
+        severity_threshold: Minimum severity to report ("low", "medium", "high", "critical")
+        compliance_standards: Standards to check against (e.g., "OWASP", "PCI-DSS", "SOC2")
+
+    Returns:
+        AuditResponse: Comprehensive audit report with findings and recommendations
+    """
+    agent_id = await get_session_agent_id()
+
+    with LogContext(f"audit_{agent_id}"):
+        logger.info("Processing code audit request",
+                   code_length=len(code),
+                   file_count=len(file_paths) if file_paths else 1,
+                   focus_areas=focus_areas,
+                   severity_threshold=severity_threshold,
+                   compliance_standards=compliance_standards,
+                   agent_id=agent_id)
+
+        try:
+            # Build audit context
+            context_prompt = _build_audit_context(
+                code, file_paths, focus_areas, severity_threshold, compliance_standards
+            )
+
+            # Get audit results from Codex with tool timeout
+            codex_response = await _send_to_codex(
+                agent_id, context_prompt, "security_audit",
+                timeout=config.server.timeouts.tool_default_timeout
+            )
+
+            # Parse and structure the audit response
+            structured_response = _parse_audit_response(codex_response, code)
+
+            logger.info("Code audit completed",
+                       agent_id=agent_id,
+                       security_issues_count=len(structured_response.security_issues),
+                       quality_issues_count=len(structured_response.quality_issues),
+                       overall_score=structured_response.overall_score,
+                       compliance_results_count=len(structured_response.compliance_results))
+
+            return structured_response
+
+        except Exception as e:
+            logger.error("Code audit failed", agent_id=agent_id, error=str(e))
+            return AuditResponse(
+                overall_score=0.0,
+                security_issues=[
+                    SecurityIssue(
+                        type="audit_error",
+                        severity="high",
+                        description=f"Audit process failed: {str(e)}",
+                        location="unknown",
+                        remediation="Check audit parameters and try again",
+                        cwe_id=None,
+                        cvss_score=None
+                    )
+                ],
+                quality_issues=[],
+                compliance_results=[],
+                summary=f"Audit failed due to error: {str(e)}",
+                recommendations=["Verify code input and audit parameters", "Try again with smaller code samples"],
+                scan_metadata={
+                    "scan_time": time.time(),
+                    "code_lines": len(code.splitlines()) if code else 0,
+                    "status": "error"
+                }
+            )
+
+
+@mcp.tool()
+@session_aware_tool
+async def debug(
+    error_message: str,
+    code_context: Optional[str] = None,
+    stack_trace: Optional[str] = None,
+    environment_info: Optional[str] = None,
+    reproduction_steps: Optional[str] = None,
+    debug_level: Optional[str] = "detailed"
+) -> DebugResponse:
+    """
+    Intelligent debugging assistance tool for analyzing and resolving code issues.
+
+    Provides comprehensive debugging analysis including root cause identification,
+    step-by-step troubleshooting guidance, and multiple solution approaches.
+    Focuses on both immediate fixes and long-term prevention strategies.
+
+    Args:
+        error_message: The error message or issue description
+        code_context: Relevant code that's causing the issue
+        stack_trace: Full stack trace if available
+        environment_info: Runtime environment details (OS, versions, dependencies)
+        reproduction_steps: Steps to reproduce the issue
+        debug_level: Level of debugging detail ("basic", "detailed", "comprehensive")
+
+    Returns:
+        DebugResponse: Comprehensive debugging analysis with solutions and prevention
+    """
+    agent_id = await get_session_agent_id()
+
+    with LogContext(f"debug_{agent_id}"):
+        logger.info("Processing debug request",
+                   error_length=len(error_message),
+                   has_code_context=code_context is not None,
+                   has_stack_trace=stack_trace is not None,
+                   has_environment_info=environment_info is not None,
+                   debug_level=debug_level,
+                   agent_id=agent_id)
+
+        try:
+            # Build debugging context
+            context_prompt = _build_debug_context(
+                error_message, code_context, stack_trace,
+                environment_info, reproduction_steps, debug_level
+            )
+
+            # Get debugging analysis from Codex with tool timeout
+            codex_response = await _send_to_codex(
+                agent_id, context_prompt, "debugging_analysis",
+                timeout=config.server.timeouts.tool_default_timeout
+            )
+
+            # Parse and structure the debug response
+            structured_response = _parse_debug_response(codex_response, error_message)
+
+            logger.info("Debug analysis completed",
+                       agent_id=agent_id,
+                       solutions_count=len(structured_response.solutions),
+                       debugging_steps_count=len(structured_response.debugging_steps),
+                       confidence_score=structured_response.confidence_score)
+
+            return structured_response
+
+        except Exception as e:
+            logger.error("Debug analysis failed", agent_id=agent_id, error=str(e))
+            return DebugResponse(
+                root_cause="Debug analysis failed",
+                solutions=[
+                    DebugSolution(
+                        approach="error_recovery",
+                        description=f"Debug process encountered an error: {str(e)}",
+                        code_changes=[],
+                        confidence=0.1,
+                        estimated_time="unknown",
+                        trade_offs=["Unable to perform full analysis"]
+                    )
+                ],
+                debugging_steps=[
+                    "Check debug input parameters",
+                    "Verify error message is complete",
+                    "Try simplifying the debugging request",
+                    "Contact system administrator if issue persists"
+                ],
+                prevention_strategies=["Regular debugging and testing practices"],
+                related_issues=[f"Debug analysis error: {str(e)}"],
+                confidence_score=0.1,
+                estimated_fix_time="unknown"
             )
 
 
@@ -546,24 +907,32 @@ TARGET FILES TO MODIFY/CREATE:
         prompt += "\n"
 
     prompt += f"""
-REQUIRED OUTPUT FORMAT:
-Provide structured code changes with:
+CRITICAL: RESPOND WITH VALID JSON ONLY. NO NARRATIVE TEXT.
 
-1. CHANGES: For each file, provide:
-   - file: filename
-   - action: "create", "modify", or "delete"
-   - diff: actual code changes (use proper diff format for modifications)
-   - explanation: why this change is needed
-   - line_numbers: if modifying existing file
+REQUIRED JSON OUTPUT FORMAT:
+{{
+  "changes": [
+    {{
+      "file": "path/to/file.py",
+      "action": "create|modify|delete",
+      "diff": "actual code changes or full file content",
+      "explanation": "why this change is needed",
+      "line_numbers": [1, 2, 3] // optional, for modifications
+    }}
+  ],
+  "dependencies_added": ["package1", "package2"],
+  "tests_needed": ["test description 1", "test description 2"],
+  "integration_notes": "how changes fit with existing code",
+  "next_steps": ["step 1", "step 2"],
+  "warnings": ["warning 1", "warning 2"]
+}}
 
-2. DEPENDENCIES_ADDED: Any new packages/imports needed
-3. TESTS_NEEDED: What should be tested
-4. INTEGRATION_NOTES: How changes fit with existing code
-5. NEXT_STEPS: What should happen after these changes
-6. WARNINGS: Potential issues or things to watch out for
-
-Focus on minimal, precise changes that follow existing code patterns.
-Include proper error handling and type safety where applicable.
+IMPORTANT RULES:
+- Return ONLY valid JSON, no other text
+- Focus on minimal, precise changes that follow existing code patterns
+- Include proper error handling and type safety where applicable
+- Use proper diff format for modifications (show what changes)
+- For new files, provide complete file content in the diff field
 """
 
     return prompt
@@ -674,10 +1043,14 @@ Provide clear explanation of root causes.
 
 # === Codex Communication and Response Parsing ===
 
-async def _send_to_codex(agent_id: str, prompt: str, operation_type: str) -> str:
+async def _send_to_codex(agent_id: str, prompt: str, operation_type: str, timeout: Optional[int] = None) -> str:
     """Send request to Codex CLI container and get response."""
     try:
         container_manager = session_manager.container_manager
+
+        # Use configured timeout if not specified
+        if timeout is None:
+            timeout = config.server.timeouts.codex_message_timeout
 
         # Get or create persistent container for this agent
         session = await container_manager.get_or_create_persistent_agent_container(
@@ -688,17 +1061,18 @@ async def _send_to_codex(agent_id: str, prompt: str, operation_type: str) -> str
             reasoning=config.codex.reasoning
         )
 
-        # Send the rich prompt to Codex
+        # Send the rich prompt to Codex with configured timeout
         response = await container_manager.send_message_to_codex(
             session=session,
-            message=prompt
+            message=prompt,
+            timeout=timeout
         )
 
         return response
 
     except Exception as e:
         logger.error(f"Failed to communicate with Codex for {operation_type}",
-                    agent_id=agent_id, error=str(e))
+                    agent_id=agent_id, error=str(e), timeout=timeout)
         return f"Error communicating with Codex: {str(e)}"
 
 
@@ -808,21 +1182,93 @@ def _parse_planning_response(response: str) -> PlanResponse:
 
 def _parse_implementation_response(response: str) -> ImplementResponse:
     """Parse Codex implementation response into structured format."""
-    # Simplified parsing - in production, this would be more sophisticated
+    cleaned = response.strip()
+
+    # Try multiple approaches to extract JSON
+    parsed_payload: Optional[Dict[str, Any]] = None
+
+    # Approach 1: Look for JSON between curly braces
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start != -1 and end != -1 and end >= start:
+        candidate = cleaned[start:end + 1]
+        try:
+            parsed_payload = json.loads(candidate)
+            logger.debug("Successfully parsed JSON from response")
+        except json.JSONDecodeError:
+            logger.debug("Failed to decode JSON between braces, trying alternative approaches")
+
+            # Approach 2: Try to find JSON after "```json" markers
+            json_marker = "```json"
+            if json_marker in cleaned.lower():
+                json_start = cleaned.lower().find(json_marker) + len(json_marker)
+                json_end = cleaned.find("```", json_start)
+                if json_end == -1:
+                    json_end = len(cleaned)
+                candidate = cleaned[json_start:json_end].strip()
+                try:
+                    parsed_payload = json.loads(candidate)
+                    logger.debug("Successfully parsed JSON from markdown block")
+                except json.JSONDecodeError:
+                    pass
+
+            # Approach 3: Try the entire response as JSON
+            if not parsed_payload:
+                try:
+                    parsed_payload = json.loads(cleaned)
+                    logger.debug("Successfully parsed entire response as JSON")
+                except json.JSONDecodeError:
+                    logger.debug("Failed to parse entire response as JSON")
+
+    if parsed_payload:
+        # Support both upper- and lower-case keys from Codex
+        def _get(key: str, default: Any) -> Any:
+            return parsed_payload.get(key) or parsed_payload.get(key.upper(), default)
+
+        raw_changes = _get("changes", [])
+        changes: List[CodeChange] = []
+        for change in raw_changes:
+            if not isinstance(change, dict):
+                continue
+            changes.append(
+                CodeChange(
+                    file=change.get("file") or change.get("FILE", ""),
+                    action=change.get("action") or change.get("ACTION", "modify"),
+                    diff=change.get("diff") or change.get("DIFF", ""),
+                    explanation=change.get("explanation") or change.get("EXPLANATION", ""),
+                    line_numbers=change.get("line_numbers") or change.get("LINE_NUMBERS"),
+                )
+            )
+
+        return ImplementResponse(
+            changes=changes,
+            dependencies_added=list(_get("dependencies_added", [])),
+            tests_needed=list(_get("tests_needed", [])),
+            integration_notes=_get("integration_notes", ""),
+            next_steps=list(_get("next_steps", [])),
+            warnings=list(_get("warnings", [])),
+        )
+
+    logger.debug(
+        "Falling back to raw implementation response",
+        response_preview=cleaned[:200],
+    )
+
     return ImplementResponse(
         changes=[
             CodeChange(
-                file="example.py",
+                file="raw_response.txt",
                 action="modify",
-                diff=response[:500] + "..." if len(response) > 500 else response,
-                explanation="Implementation from Codex response"
+                diff=cleaned,
+                explanation="Codex implementation output could not be parsed",
             )
         ],
         dependencies_added=[],
-        tests_needed=["Test implementation"],
-        integration_notes="Review Codex response for integration details",
-        next_steps=["Apply changes", "Run tests"],
-        warnings=["Review generated code before applying"]
+        tests_needed=["Review manual output"],
+        integration_notes="Codex response was not structured JSON; manual review required",
+        next_steps=["Coerce Codex to return structured diff"],
+        warnings=["Implementation response did not match required format"],
     )
 
 
@@ -876,6 +1322,501 @@ def _parse_fix_response(response: str) -> FixResponse:
     )
 
 
+def _build_chat_context(
+    message: str,
+    context: Optional[str],
+    previous_messages: Optional[List[str]],
+    reference_files: Optional[List[str]]
+) -> str:
+    """Build rich context prompt for conversational interaction."""
+    prompt = f"""
+CODEX CONVERSATIONAL REQUEST
+
+You are Codex, an expert AI assistant helping with software development tasks.
+Respond conversationally and helpfully to the user's message, providing insights,
+suggestions, and follow-up questions as appropriate.
+
+USER MESSAGE:
+{message}
+
+"""
+
+    if context:
+        prompt += f"CURRENT CONTEXT:\n{context}\n\n"
+
+    if previous_messages and len(previous_messages) > 0:
+        prompt += "CONVERSATION HISTORY:\n"
+        for i, prev_msg in enumerate(previous_messages[-5:]):  # Last 5 messages for context
+            prompt += f"{i+1}. {prev_msg}\n"
+        prompt += "\n"
+
+    if reference_files and len(reference_files) > 0:
+        prompt += f"REFERENCE FILES:\n{', '.join(reference_files)}\n\n"
+
+    prompt += """
+RESPONSE FORMAT:
+Please respond naturally and conversationally. Focus on being helpful, insightful,
+and providing actionable advice. If appropriate, suggest follow-up questions or
+related topics the user might want to explore.
+
+Be encouraging and collaborative in tone. If you need clarification, ask specific
+questions. If you can provide examples or code snippets, do so.
+"""
+
+    return prompt
+
+
+def _parse_chat_response(response: str, original_message: str) -> ChatResponse:
+    """Parse Codex chat response into structured format."""
+    import time
+    import hashlib
+
+    # Generate conversation ID based on timestamp and message hash
+    conversation_id = f"chat_{int(time.time())}_{hashlib.md5(original_message.encode()).hexdigest()[:8]}"
+
+    # Extract suggestions and follow-up questions from response
+    suggestions = []
+    follow_up_questions = []
+
+    # Look for common suggestion patterns in the response
+    response_lower = response.lower()
+    if "consider" in response_lower or "suggest" in response_lower or "recommend" in response_lower:
+        # Extract specific suggestions (simplified approach)
+        lines = response.split('\n')
+        for line in lines:
+            line_lower = line.strip().lower()
+            if any(keyword in line_lower for keyword in ["consider", "suggest", "recommend", "try", "might"]):
+                if len(line.strip()) > 10 and len(line.strip()) < 200:
+                    suggestions.append(line.strip())
+
+    # Look for questions in the response
+    sentences = response.replace('!', '.').replace('?', '.').split('.')
+    for sentence in sentences:
+        if '?' in sentence or any(word in sentence.lower() for word in ["what", "how", "why", "when", "where", "would you"]):
+            cleaned = sentence.strip()
+            if len(cleaned) > 10 and len(cleaned) < 150:
+                follow_up_questions.append(cleaned + "?")
+
+    # Calculate confidence based on response quality indicators
+    confidence_score = 0.8  # Base confidence
+    if len(response) > 100:
+        confidence_score += 0.1
+    if any(word in response.lower() for word in ["example", "code", "specific", "detailed"]):
+        confidence_score += 0.1
+    confidence_score = min(confidence_score, 1.0)
+
+    return ChatResponse(
+        response=response,
+        conversation_id=conversation_id,
+        suggestions=suggestions[:3],  # Limit to top 3 suggestions
+        follow_up_questions=follow_up_questions[:3],  # Limit to top 3 questions
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        context_used=[original_message[:100] + "..." if len(original_message) > 100 else original_message],
+        confidence_score=confidence_score
+    )
+
+
+def _build_audit_context(
+    code: str,
+    file_paths: Optional[List[str]],
+    focus_areas: Optional[List[str]],
+    severity_threshold: Optional[str],
+    compliance_standards: Optional[List[str]]
+) -> str:
+    """Build rich context prompt for security and quality audit."""
+    prompt = f"""
+CODEX SECURITY AND QUALITY AUDIT REQUEST
+
+You are Codex, performing a comprehensive security and quality audit.
+Analyze the provided code for vulnerabilities, quality issues, and compliance violations.
+
+CODE TO AUDIT:
+{code}
+
+"""
+
+    if file_paths and len(file_paths) > 0:
+        prompt += f"FILE PATHS:\n{', '.join(file_paths)}\n\n"
+
+    if focus_areas and len(focus_areas) > 0:
+        prompt += f"FOCUS AREAS:\n{', '.join(focus_areas)}\n\n"
+
+    if severity_threshold:
+        prompt += f"SEVERITY THRESHOLD: Report {severity_threshold} and above\n\n"
+
+    if compliance_standards and len(compliance_standards) > 0:
+        prompt += f"COMPLIANCE STANDARDS:\n{', '.join(compliance_standards)}\n\n"
+
+    prompt += """
+AUDIT REQUIREMENTS:
+
+1. SECURITY ANALYSIS:
+   - SQL injection vulnerabilities
+   - Cross-site scripting (XSS)
+   - Authentication and authorization flaws
+   - Input validation issues
+   - Cryptographic weaknesses
+   - Sensitive data exposure
+   - Path traversal vulnerabilities
+   - Command injection risks
+
+2. QUALITY ANALYSIS:
+   - Code complexity and maintainability
+   - Performance bottlenecks
+   - Error handling quality
+   - Resource management (memory leaks, file handles)
+   - Code duplication
+   - Naming conventions
+   - Documentation quality
+
+3. COMPLIANCE CHECKS:
+   - Industry standard adherence
+   - Best practice violations
+   - Framework-specific guidelines
+   - Security policy compliance
+
+RESPONSE FORMAT:
+For each issue found, provide:
+- Issue type and severity (critical/high/medium/low)
+- Specific location (file:line or code snippet)
+- Detailed description of the problem
+- Security impact assessment
+- Specific remediation steps
+- CWE/CVE references where applicable
+
+Provide an overall security score (0-100) and summary of findings.
+Focus on actionable, specific recommendations.
+"""
+
+    return prompt
+
+
+def _parse_audit_response(response: str, original_code: str) -> AuditResponse:
+    """Parse Codex audit response into structured format."""
+    import re
+    import time
+
+    # Initialize empty collections
+    security_issues = []
+    quality_issues = []
+    compliance_results = []
+
+    # Extract security issues using pattern matching
+    security_patterns = [
+        r"(?i)(sql injection|xss|cross-site scripting|authentication|authorization|input validation|cryptographic|sensitive data|path traversal|command injection)",
+        r"(?i)(vulnerability|security issue|security flaw|security risk)"
+    ]
+
+    quality_patterns = [
+        r"(?i)(complexity|maintainability|performance|error handling|resource management|code duplication|naming convention|documentation)",
+        r"(?i)(quality issue|code smell|technical debt|best practice)"
+    ]
+
+    # Parse severity levels
+    severity_map = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+    # Split response into lines for analysis
+    lines = response.split('\n')
+    current_issue = None
+    current_type = "security"
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Check for severity indicators
+        severity = "medium"  # default
+        for sev in ["critical", "high", "medium", "low"]:
+            if sev in line.lower():
+                severity = sev
+                break
+
+        # Check for security issues
+        if any(re.search(pattern, line) for pattern in security_patterns):
+            security_issues.append(SecurityIssue(
+                type="security_vulnerability",
+                severity=severity,
+                description=line,
+                location="See audit details",
+                remediation="Follow security best practices",
+                cwe_id=None,
+                cvss_score=None
+            ))
+
+        # Check for quality issues
+        elif any(re.search(pattern, line) for pattern in quality_patterns):
+            quality_issues.append(QualityIssue(
+                type="code_quality",
+                severity=severity,
+                description=line,
+                location="See audit details",
+                suggestion="Improve code quality",
+                impact="maintainability"
+            ))
+
+    # Extract overall score (look for numbers between 0-100)
+    score_match = re.search(r'(?i)score[:\s]*(\d{1,3})', response)
+    overall_score = float(score_match.group(1)) if score_match else 75.0
+
+    # Generate compliance results based on standards mentioned
+    compliance_results.append(ComplianceResult(
+        standard="General Security",
+        status="partial" if security_issues else "passed",
+        violations=len(security_issues),
+        recommendations=["Address security issues identified in audit"]
+    ))
+
+    # Extract summary and recommendations
+    summary_lines = response.split('\n')[:3]  # First few lines as summary
+    summary = ' '.join(summary_lines).strip()
+    if len(summary) > 500:
+        summary = summary[:500] + "..."
+
+    recommendations = [
+        "Review and address all identified security vulnerabilities",
+        "Implement proper input validation and sanitization",
+        "Follow secure coding best practices",
+        "Regular security audits and code reviews"
+    ]
+
+    return AuditResponse(
+        overall_score=overall_score,
+        security_issues=security_issues[:10],  # Limit to top 10
+        quality_issues=quality_issues[:10],    # Limit to top 10
+        compliance_results=compliance_results,
+        summary=summary,
+        recommendations=recommendations,
+        scan_metadata={
+            "scan_time": time.time(),
+            "code_lines": len(original_code.splitlines()),
+            "issues_found": len(security_issues) + len(quality_issues),
+            "status": "completed"
+        }
+    )
+
+
+def _build_debug_context(
+    error_message: str,
+    code_context: Optional[str],
+    stack_trace: Optional[str],
+    environment_info: Optional[str],
+    reproduction_steps: Optional[str],
+    debug_level: Optional[str]
+) -> str:
+    """Build rich context prompt for debugging analysis."""
+    prompt = f"""
+CODEX INTELLIGENT DEBUGGING REQUEST
+
+You are Codex, providing expert debugging assistance for software development.
+Analyze the error and provide comprehensive troubleshooting guidance with multiple solution approaches.
+
+ERROR MESSAGE:
+{error_message}
+
+"""
+
+    if code_context:
+        prompt += f"CODE CONTEXT:\n{code_context}\n\n"
+
+    if stack_trace:
+        prompt += f"STACK TRACE:\n{stack_trace}\n\n"
+
+    if environment_info:
+        prompt += f"ENVIRONMENT INFO:\n{environment_info}\n\n"
+
+    if reproduction_steps:
+        prompt += f"REPRODUCTION STEPS:\n{reproduction_steps}\n\n"
+
+    detail_level = debug_level or "detailed"
+    prompt += f"DEBUG LEVEL: {detail_level}\n\n"
+
+    prompt += """
+DEBUGGING ANALYSIS REQUIREMENTS:
+
+1. ROOT CAUSE ANALYSIS:
+   - Primary cause of the error
+   - Contributing factors
+   - Why it's happening now
+   - Environment/configuration dependencies
+
+2. SOLUTION APPROACHES:
+   - Quick fix (immediate workaround)
+   - Proper fix (addresses root cause)
+   - Alternative approaches
+   - Each with confidence level and estimated time
+
+3. DEBUGGING STEPS:
+   - Systematic troubleshooting process
+   - Information gathering steps
+   - Validation and testing procedures
+   - Rollback plans if fixes fail
+
+4. PREVENTION STRATEGIES:
+   - How to prevent this issue in the future
+   - Testing improvements
+   - Code quality measures
+   - Monitoring and alerting
+
+5. RELATED ISSUES:
+   - Similar problems that might occur
+   - Dependencies that could break
+   - Performance implications
+
+RESPONSE FORMAT:
+- Clear, step-by-step guidance
+- Code examples where helpful
+- Specific commands to run
+- Expected outcomes at each step
+- Confidence levels for each solution
+- Time estimates for implementation
+- Trade-offs between different approaches
+
+Focus on being practical and actionable. Provide multiple solution paths
+when possible, ordered by likelihood of success.
+"""
+
+    return prompt
+
+
+def _parse_debug_response(response: str, original_error: str) -> DebugResponse:
+    """Parse Codex debug response into structured format."""
+    import re
+    import time
+
+    # Initialize collections
+    solutions = []
+    debugging_steps = []
+    prevention_strategies = []
+    related_issues = []
+
+    # Split response into sections for analysis
+    lines = response.split('\n')
+    current_section = None
+
+    # Extract root cause (look for common patterns)
+    root_cause_patterns = [
+        r"(?i)root cause[:\s]*(.+)",
+        r"(?i)main issue[:\s]*(.+)",
+        r"(?i)primary cause[:\s]*(.+)",
+        r"(?i)the problem is[:\s]*(.+)"
+    ]
+
+    root_cause = "Error analysis in progress"
+    for line in lines:
+        for pattern in root_cause_patterns:
+            match = re.search(pattern, line)
+            if match:
+                root_cause = match.group(1).strip()
+                break
+        if root_cause != "Error analysis in progress":
+            break
+
+    # Extract solutions
+    solution_keywords = ["fix", "solution", "approach", "resolve", "workaround"]
+    for i, line in enumerate(lines):
+        line_lower = line.lower().strip()
+        if any(keyword in line_lower for keyword in solution_keywords):
+            if len(line.strip()) > 20:  # Substantial content
+                confidence = 0.8  # Default confidence
+                estimated_time = "30-60 minutes"  # Default estimate
+
+                # Look for confidence indicators
+                if any(word in line_lower for word in ["quick", "simple", "easy"]):
+                    confidence = 0.9
+                    estimated_time = "15-30 minutes"
+                elif any(word in line_lower for word in ["complex", "difficult", "major"]):
+                    confidence = 0.6
+                    estimated_time = "2-4 hours"
+
+                solutions.append(DebugSolution(
+                    approach="general_fix",
+                    description=line.strip(),
+                    code_changes=[],
+                    confidence=confidence,
+                    estimated_time=estimated_time,
+                    trade_offs=["Standard debugging approach"]
+                ))
+
+    # Extract debugging steps
+    step_keywords = ["step", "check", "verify", "test", "run", "examine"]
+    for line in lines:
+        line_lower = line.lower().strip()
+        if any(keyword in line_lower for keyword in step_keywords):
+            if len(line.strip()) > 15 and line.strip().endswith(('.', ':', '?')):
+                debugging_steps.append(line.strip())
+
+    # Extract prevention strategies
+    prevention_keywords = ["prevent", "avoid", "future", "best practice", "recommend"]
+    for line in lines:
+        line_lower = line.lower().strip()
+        if any(keyword in line_lower for keyword in prevention_keywords):
+            if len(line.strip()) > 20:
+                prevention_strategies.append(line.strip())
+
+    # Extract related issues
+    related_keywords = ["similar", "related", "also", "might", "could"]
+    for line in lines:
+        line_lower = line.lower().strip()
+        if any(keyword in line_lower for keyword in related_keywords):
+            if "error" in line_lower or "issue" in line_lower or "problem" in line_lower:
+                if len(line.strip()) > 20:
+                    related_issues.append(line.strip())
+
+    # Calculate overall confidence based on available information
+    confidence_score = 0.7  # Base confidence
+    if solutions:
+        confidence_score += 0.1
+    if debugging_steps:
+        confidence_score += 0.1
+    if prevention_strategies:
+        confidence_score += 0.1
+    confidence_score = min(confidence_score, 1.0)
+
+    # Estimate fix time based on complexity
+    estimated_fix_time = "1-2 hours"
+    if "simple" in response.lower() or "quick" in response.lower():
+        estimated_fix_time = "30 minutes"
+    elif "complex" in response.lower() or "major" in response.lower():
+        estimated_fix_time = "4+ hours"
+
+    # Ensure we have at least some default content
+    if not solutions:
+        solutions.append(DebugSolution(
+            approach="analysis_needed",
+            description="Further analysis required based on provided information",
+            code_changes=[],
+            confidence=0.5,
+            estimated_time="varies",
+            trade_offs=["Requires additional investigation"]
+        ))
+
+    if not debugging_steps:
+        debugging_steps = [
+            "Review the complete error message and context",
+            "Check recent changes that might have caused this issue",
+            "Verify environment configuration and dependencies",
+            "Test with minimal reproduction case"
+        ]
+
+    if not prevention_strategies:
+        prevention_strategies = [
+            "Implement comprehensive error handling",
+            "Add monitoring and alerting for similar issues",
+            "Regular code reviews and testing"
+        ]
+
+    return DebugResponse(
+        root_cause=root_cause,
+        solutions=solutions[:5],  # Limit to top 5 solutions
+        debugging_steps=debugging_steps[:10],  # Limit to top 10 steps
+        prevention_strategies=prevention_strategies[:5],  # Limit to top 5 strategies
+        related_issues=related_issues[:5],  # Limit to top 5 related issues
+        confidence_score=confidence_score,
+        estimated_fix_time=estimated_fix_time
+    )
+
+
 def create_mcp_server() -> FastMCP:
     """
     Create and configure the FastMCP server instance.
@@ -883,7 +1824,7 @@ def create_mcp_server() -> FastMCP:
     Returns:
         FastMCP: Configured server instance ready for startup
     """
-    logger.info("Initializing Codex CLI MCP Server with 4 core workflow tools")
+    logger.info("Initializing Codex CLI MCP Server with 10 comprehensive tools: health_check, list_sessions, get_my_session_info, plan, implement, review, fix, chat, audit, debug")
     return mcp
 
 

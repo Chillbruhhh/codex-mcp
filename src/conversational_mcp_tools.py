@@ -127,7 +127,7 @@ class ConversationalMCPTools:
             codex_response = await self.session_manager.send_message_to_codex(
                 session.session_id,
                 opening_message,
-                timeout=300
+                timeout=self.session_manager.config.server.timeouts.tool_default_timeout
             )
 
             conversation_log.append({
@@ -209,7 +209,7 @@ class ConversationalMCPTools:
             codex_response = await self.session_manager.send_message_to_codex(
                 session.session_id,
                 opening_message,
-                timeout=300
+                timeout=self.session_manager.config.server.timeouts.tool_default_timeout
             )
 
             conversation_log.append({
@@ -284,7 +284,7 @@ class ConversationalMCPTools:
             codex_response = await self.session_manager.send_message_to_codex(
                 session.session_id,
                 opening_message,
-                timeout=300
+                timeout=self.session_manager.config.server.timeouts.tool_default_timeout
             )
 
             conversation_log.append({
@@ -361,7 +361,7 @@ class ConversationalMCPTools:
             codex_response = await self.session_manager.send_message_to_codex(
                 session.session_id,
                 opening_message,
-                timeout=300
+                timeout=self.session_manager.config.server.timeouts.tool_default_timeout
             )
 
             conversation_log.append({

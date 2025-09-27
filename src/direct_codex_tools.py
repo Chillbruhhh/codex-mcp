@@ -80,7 +80,7 @@ class DirectCodexTools:
         response = await self.container_manager.send_message_to_codex(
             container_session,
             prompt,
-            timeout=600,
+            timeout=self.session_manager.config.server.timeouts.tool_default_timeout,
         )
 
         logger.info("Codex plan response received", length=len(response))

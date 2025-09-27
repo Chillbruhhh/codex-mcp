@@ -307,7 +307,7 @@ __CODEX_BRIDGE__
         self,
         session_id: str,
         message: str,
-        timeout: int = 300
+        timeout: Optional[int] = None
     ) -> str:
         """
         Send a message to the persistent interactive Codex CLI agent.
@@ -322,9 +322,14 @@ __CODEX_BRIDGE__
         if not session.agent_ready:
             raise ValueError(f"Agent not ready: {session_id}")
 
+        # Use configured timeout if not specified
+        if timeout is None:
+            timeout = self.config.server.timeouts.codex_message_timeout
+
         logger.info("Sending message to persistent interactive agent",
                    session_id=session_id,
-                   message_preview=message[:100])
+                   message_preview=message[:100],
+                   timeout=timeout)
 
         try:
             container = self.docker_client.containers.get(session.container_id)
@@ -407,6 +412,12 @@ __CODEX_BRIDGE__
                         response = read_result.output.decode('utf-8', errors='ignore').strip()
 
                         if response and response != "PROCESSING":
+                            logger.debug(
+                                "Agent response captured",
+                                session_id=session.session_id,
+                                response_preview=response[:200],
+                                response_length=len(response),
+                            )
                             logger.debug("Agent response received",
                                        session_id=session.session_id,
                                        response_length=len(response))

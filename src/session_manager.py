@@ -350,7 +350,7 @@ class CodexSessionManager:
         self,
         session_id: str,
         message: str,
-        timeout: int = 300
+        timeout: Optional[int] = None
     ) -> str:
         """
         Send a natural language message to Codex CLI in the specified session.
@@ -376,6 +376,10 @@ class CodexSessionManager:
 
         with LogContext(session_id):
             start_time = time.time()
+
+            # Use configured timeout if not specified
+            if timeout is None:
+                timeout = self.config.server.timeouts.codex_message_timeout
 
             try:
                 # Update last activity

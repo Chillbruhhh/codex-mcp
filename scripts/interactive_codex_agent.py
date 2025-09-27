@@ -370,6 +370,13 @@ class ResponseAggregator:
         self.current_submission: Optional[str] = None
         self.buffers: dict[str, str] = {}
         self.ready: dict[str, bool] = {}
+        self.reasoning_buffers: dict[str, str] = {}
+
+    def _resolve_submission(self, submission_id: Optional[str]) -> Optional[str]:
+        """Map proto event identifiers back to the active submission."""
+        if submission_id and submission_id in self.buffers:
+            return submission_id
+        return self.current_submission
 
     def begin_submission(self, submission_id: str) -> None:
         self.current_submission = submission_id
@@ -378,22 +385,33 @@ class ResponseAggregator:
         RESPONSE_PATH.write_text("PROCESSING")
 
     def append_delta(self, submission_id: str, delta: str) -> None:
-        if not submission_id:
+        target_id = self._resolve_submission(submission_id)
+        if not target_id:
             return
-        if submission_id != self.current_submission:
-            self.buffers.setdefault(submission_id, "")
-        current = self.buffers.get(submission_id, "") + delta
-        self.buffers[submission_id] = current
+        if target_id != submission_id:
+            self.buffers.setdefault(target_id, "")
+        current = self.buffers.get(target_id, "") + delta
+        self.buffers[target_id] = current
 
     def finalize_message(self, submission_id: str, message: str) -> None:
-        if not submission_id:
+        target_id = self._resolve_submission(submission_id)
+        if not target_id:
             return
-        existing = self.buffers.get(submission_id, "")
-        if existing and not existing.endswith("\n"):
-            existing += "\n"
-        existing += message
-        self.buffers[submission_id] = existing
-        self.mark_ready(submission_id)
+        reasoning = self.reasoning_buffers.pop(target_id, "")
+        existing = self.buffers.get(target_id, "")
+        combined = ""
+        if reasoning:
+            combined += reasoning
+            if not reasoning.endswith("\n"):
+                combined += "\n"
+        if existing:
+            combined += existing
+            if not existing.endswith("\n"):
+                combined += "\n"
+        combined += message
+        self.buffers[target_id] = existing
+        self.buffers[target_id] = combined
+        self.mark_ready(target_id)
 
     def append_system_note(self, text: str) -> None:
         if self.current_submission:
@@ -410,11 +428,12 @@ class ResponseAggregator:
                 RESPONSE_PATH.write_text(self.buffers[self.current_submission])
 
     def mark_ready(self, submission_id: Optional[str]) -> None:
-        if not submission_id:
+        target_id = self._resolve_submission(submission_id)
+        if not target_id:
             return
-        self.ready[submission_id] = True
-        if submission_id == self.current_submission:
-            RESPONSE_PATH.write_text(self.buffers.get(submission_id, ""))
+        self.ready[target_id] = True
+        if target_id == self.current_submission:
+            RESPONSE_PATH.write_text(self.buffers.get(target_id, ""))
 
 
 async def read_stderr(proc: asyncio.subprocess.Process) -> None:
@@ -454,8 +473,12 @@ def handle_event(event: dict, aggregator: ResponseAggregator) -> None:
         update_status(STATUS_FAILED)
     elif event_type in {"agent_reasoning_delta", "agent_reasoning", "agent_reasoning_section_break"}:
         text = msg.get("delta") or msg.get("text") or ""
-        if text:
+        if event_type == "agent_reasoning_section_break":
+            aggregator.append_system_note("\n")
+        elif text:
             aggregator.append_system_note(text)
+            current = aggregator.reasoning_buffers.get(event_id, "")
+            aggregator.reasoning_buffers[event_id] = current + text
     elif event_type == "user_message":
         pass
     elif event_type == "token_count":
@@ -466,6 +489,11 @@ def handle_event(event: dict, aggregator: ResponseAggregator) -> None:
     elif event_type == "exec_approval_request":
         aggregator.append_system_note("\n[approval_requested] command pending\n")
         update_status(STATUS_PROCESSING)
+    elif event_type == "stream_error":
+        error_msg = msg.get("error", "stream disconnected")
+        aggregator.append_system_note(f"\n[stream_error] {error_msg}\n")
+        aggregator.mark_ready(event_id)
+        update_status(STATUS_WAITING)
 
 
 async def fifo_submission_loop(proc: asyncio.subprocess.Process, aggregator: ResponseAggregator) -> None:

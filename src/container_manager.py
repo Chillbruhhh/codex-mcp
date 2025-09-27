@@ -28,6 +28,7 @@ from .auth_manager import CodexAuthManager, AuthMethod
 from .persistence import AgentPersistenceManager, ContainerStatus
 from .interactive_codex_manager import InteractiveCodexManager
 from .persistent_agent_manager import PersistentAgentManager
+from .async_docker_manager import AsyncDockerManager
 
 logger = structlog.get_logger(__name__)
 
@@ -98,9 +99,10 @@ class CodexContainerManager:
         """
         self.config = config or get_config()
         self.docker_client = docker.from_env()
+        self.async_docker = AsyncDockerManager(self.docker_client, self.config.server.timeouts)
         self.auth_manager = CodexAuthManager(self.config)
         self.persistence_manager = AgentPersistenceManager(data_path)
-        self.interactive_manager = InteractiveCodexManager()
+        self.interactive_manager = InteractiveCodexManager(self.config)
         self.persistent_agent_manager = PersistentAgentManager(self.docker_client, self.config)
         self.active_sessions: Dict[str, ContainerSession] = {}
         self.base_image = "codex-mcp-base"
@@ -123,8 +125,8 @@ class CodexContainerManager:
             str: The base image name/tag
         """
         try:
-            # Check if base image exists
-            self.docker_client.images.get(self.base_image)
+            # Check if base image exists (async)
+            await self.async_docker.get_image(self.base_image)
             logger.info("Base image found", image=self.base_image)
             return self.base_image
         except NotFound:
@@ -141,8 +143,8 @@ class CodexContainerManager:
             dockerfile_path.write_text(dockerfile_content)
 
             try:
-                # Build image synchronously (Docker SDK doesn't support async build)
-                image, build_logs = self.docker_client.images.build(
+                # Build image asynchronously
+                image, build_logs = await self.async_docker.build_image(
                     path=temp_dir,
                     tag=self.base_image,
                     rm=True,
@@ -1158,7 +1160,7 @@ CMD ["bash", "/app/logging_startup.sh"]
         self,
         session: ContainerSession,
         message: str,
-        timeout: int = 300
+        timeout: Optional[int] = None
     ) -> str:
         """
         Send a natural language message to interactive Codex CLI session.
@@ -1177,11 +1179,16 @@ CMD ["bash", "/app/logging_startup.sh"]
         Raises:
             ContainerExecutionError: If message sending fails
         """
+        # Use configured timeout if not specified
+        if timeout is None:
+            timeout = self.config.server.timeouts.codex_message_timeout
+
         with LogContext(session.session_id):
             try:
                 logger.info("Sending message to interactive Codex CLI",
                            message_preview=message[:100],
-                           session_id=session.session_id)
+                           session_id=session.session_id,
+                           timeout=timeout)
 
                 # Use the Persistent Agent Manager for true interactive conversation
                 # Check if we have a persistent agent for this session

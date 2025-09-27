@@ -56,6 +56,17 @@ def validate_codex_config(config: 'CodexConfig') -> None:
 
 
 @dataclass
+class TimeoutConfig:
+    """Timeout configuration for various operations."""
+    tool_default_timeout: int = 600  # 10 minutes for MCP tools
+    codex_message_timeout: int = 900  # 15 minutes for Codex CLI communication
+    container_startup_timeout: int = 120  # 2 minutes for container startup
+    docker_operation_timeout: int = 60  # 1 minute for Docker API operations
+    container_stop_timeout: int = 30  # 30 seconds for graceful container shutdown
+    auth_flow_timeout: int = 300  # 5 minutes for OAuth flows
+
+
+@dataclass
 class ServerConfig:
     """Main server configuration."""
     host: str = "localhost"
@@ -63,6 +74,7 @@ class ServerConfig:
     log_level: str = "INFO"
     max_concurrent_sessions: int = 20
     session_timeout: int = 3600  # 1 hour
+    timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
 
 
 @dataclass
@@ -160,6 +172,26 @@ def _load_from_env(config: Config) -> None:
         os.getenv("SESSION_TIMEOUT", str(config.server.session_timeout))
     )
 
+    # Timeout config
+    config.server.timeouts.tool_default_timeout = int(
+        os.getenv("TOOL_DEFAULT_TIMEOUT", str(config.server.timeouts.tool_default_timeout))
+    )
+    config.server.timeouts.codex_message_timeout = int(
+        os.getenv("CODEX_MESSAGE_TIMEOUT", str(config.server.timeouts.codex_message_timeout))
+    )
+    config.server.timeouts.container_startup_timeout = int(
+        os.getenv("CONTAINER_STARTUP_TIMEOUT", str(config.server.timeouts.container_startup_timeout))
+    )
+    config.server.timeouts.docker_operation_timeout = int(
+        os.getenv("DOCKER_OPERATION_TIMEOUT", str(config.server.timeouts.docker_operation_timeout))
+    )
+    config.server.timeouts.container_stop_timeout = int(
+        os.getenv("CONTAINER_STOP_TIMEOUT", str(config.server.timeouts.container_stop_timeout))
+    )
+    config.server.timeouts.auth_flow_timeout = int(
+        os.getenv("AUTH_FLOW_TIMEOUT", str(config.server.timeouts.auth_flow_timeout))
+    )
+
     # Container config
     config.container.cpu_limit = os.getenv("CONTAINER_CPU_LIMIT", config.container.cpu_limit)
     config.container.memory_limit = os.getenv("CONTAINER_MEMORY_LIMIT", config.container.memory_limit)
@@ -198,7 +230,12 @@ def _load_from_file(config: Config, config_path: str) -> None:
         # Update config with file values
         if "server" in data:
             for key, value in data["server"].items():
-                if hasattr(config.server, key):
+                if key == "timeouts" and isinstance(value, dict):
+                    # Handle nested timeout configuration
+                    for timeout_key, timeout_value in value.items():
+                        if hasattr(config.server.timeouts, timeout_key):
+                            setattr(config.server.timeouts, timeout_key, timeout_value)
+                elif hasattr(config.server, key):
                     setattr(config.server, key, value)
 
         if "container" in data:
