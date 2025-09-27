@@ -69,3 +69,9 @@ codex-cli-repo/
 
 data/
 ./data/ 
+
+
+.auth/
+
+config/auth.json
+

@@ -11,7 +11,7 @@ import json
 import time
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, timedelta
 import aiohttp
 import structlog
@@ -29,6 +29,7 @@ class OAuthTokens:
     expires_at: float = 0.0  # Timestamp when token expires
     scope: Optional[str] = None
     created_at: float = 0.0  # When tokens were created
+    extra: Dict[str, Any] = field(default_factory=dict, repr=False)
 
     def __post_init__(self):
         """Set timestamps if not provided."""
@@ -42,13 +43,37 @@ class OAuthTokens:
         return time.time() >= (self.expires_at - buffer_seconds)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary format."""
-        return asdict(self)
+        """Convert to dictionary format, preserving extra fields."""
+        base = {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "token_type": self.token_type,
+            "expires_in": self.expires_in,
+            "expires_at": self.expires_at,
+            "scope": self.scope,
+            "created_at": self.created_at,
+        }
+        base.update(self.extra)
+        return base
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "OAuthTokens":
-        """Create from dictionary data."""
-        return cls(**data)
+        """Create from dictionary data, ignoring unknown fields."""
+        allowed_fields = {
+            "access_token",
+            "refresh_token",
+            "token_type",
+            "expires_in",
+            "expires_at",
+            "scope",
+            "created_at",
+        }
+
+        filtered = {k: v for k, v in data.items() if k in allowed_fields}
+        extra = {k: v for k, v in data.items() if k not in allowed_fields}
+        instance = cls(**filtered)
+        instance.extra = extra
+        return instance
 
 
 class OAuthError(Exception):

@@ -17,6 +17,9 @@ RUN apt-get update && apt-get install -y \
     && apt-get install -y docker-ce-cli \
     && rm -rf /var/lib/apt/lists/*
 
+# Create codex user for running containers
+RUN groupadd -r codex && useradd -r -g codex -s /bin/bash -m codex
+
 # Install Codex CLI globally
 RUN npm install -g @openai/codex
 
@@ -29,16 +32,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY src/ ./src/
+COPY scripts/ ./scripts/
 COPY server.py .
 COPY entrypoint.sh .
 
-# Ensure proper line endings and permissions for entrypoint
+# Ensure proper line endings and permissions for entrypoint and scripts
 RUN chmod +x entrypoint.sh && \
+    chmod +x scripts/*.sh && \
     # Convert any Windows line endings to Unix (if needed)
-    sed -i 's/\r$//' entrypoint.sh || true
+    sed -i 's/\r$//' entrypoint.sh scripts/*.sh || true
 
-# Create app directories with proper permissions
-RUN mkdir -p /app/data /app/config /app/sessions \
+# Create app directories with proper permissions for codex user
+RUN mkdir -p /app/data /app/config /app/sessions /app/data/agents /app/data/metadata \
+    && chown -R codex:codex /app \
     && chmod -R 755 /app
 
 # Expose port for MCP server

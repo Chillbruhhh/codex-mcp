@@ -77,7 +77,11 @@ class CodexAuthManager:
         """
         self.config = config
         self._validated_credentials: Dict[str, AuthCredentials] = {}
-        self.oauth_manager = OAuthTokenManager()
+        token_storage_path = None
+        if hasattr(self.config, "auth") and getattr(self.config.auth.oauth, "token_storage_path", None):
+            token_storage_path = self.config.auth.oauth.token_storage_path
+
+        self.oauth_manager = OAuthTokenManager(token_storage_path)
         self.oauth_flow = OAuthFlow(oauth_manager=self.oauth_manager)
 
         logger.info("Authentication manager initialized",
@@ -162,9 +166,10 @@ class CodexAuthManager:
             logger.debug("ChatGPT OAuth token found in environment")
             return True
 
-        # Check for stored OAuth tokens using OAuth manager
-        if self.oauth_manager.has_valid_tokens():
-            logger.debug("Valid OAuth tokens found in storage")
+        # Check for stored OAuth tokens using OAuth manager (file presence is enough; refresh handled later)
+        token_path = getattr(self.oauth_manager, "token_path", None)
+        if token_path and token_path.exists():
+            logger.debug("OAuth token file found", path=str(token_path))
             return True
 
         logger.debug("No OAuth authentication available")

@@ -43,6 +43,7 @@ class AgentContainerInfo:
     reasoning: str = "medium"
     provider: str = "openai"
     approval_mode: str = "suggest"
+    persistent_session_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -53,7 +54,9 @@ class AgentContainerInfo:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'AgentContainerInfo':
         """Create from dictionary."""
+        data = dict(data)
         data['status'] = ContainerStatus(data['status'])
+        data.setdefault('persistent_session_id', None)
         return cls(**data)
 
 
@@ -152,7 +155,8 @@ class AgentPersistenceManager:
         model: str = "gpt-5-codex",
         reasoning: str = "medium",
         provider: str = "openai",
-        approval_mode: str = "suggest"
+        approval_mode: str = "suggest",
+        persistent_session_id: Optional[str] = None
     ) -> None:
         """
         Register a new agent-container mapping.
@@ -183,7 +187,8 @@ class AgentPersistenceManager:
                 model=model,
                 reasoning=reasoning,
                 provider=provider,
-                approval_mode=approval_mode
+                approval_mode=approval_mode,
+                persistent_session_id=persistent_session_id
             )
 
             self._data[agent_id] = info
@@ -239,6 +244,26 @@ class AgentPersistenceManager:
             if agent_id in self._data:
                 self._data[agent_id].last_active = time.time()
                 await self._save_data()
+
+    async def update_persistent_session_id(
+        self,
+        agent_id: str,
+        persistent_session_id: str
+    ) -> None:
+        """Update the persistent session identifier for an agent."""
+        async with self.lock:
+            info = self._data.get(agent_id)
+            if not info:
+                return
+
+            info.persistent_session_id = persistent_session_id
+            await self._save_data()
+
+            logger.debug(
+                "Updated persistent session ID",
+                agent_id=agent_id,
+                persistent_session_id=persistent_session_id,
+            )
 
     async def remove_agent_container(self, agent_id: str) -> Optional[AgentContainerInfo]:
         """

@@ -8,8 +8,10 @@ FastMCP's session system to automatically manage agent lifecycles.
 
 import asyncio
 import functools
-from typing import Optional, Any, Callable, Dict
+import threading
 from contextlib import contextmanager
+from typing import Any, Callable, Dict, Optional
+
 import structlog
 
 from .session_registry import get_session_registry, MCPSessionRegistry
@@ -17,8 +19,8 @@ from .session_registry import get_session_registry, MCPSessionRegistry
 logger = structlog.get_logger(__name__)
 
 # Thread-local storage for current session context
-import threading
 _session_context = threading.local()
+_fallback_session_id: Optional[str] = None
 
 
 class MCPSessionContext:
@@ -252,10 +254,16 @@ class FastMCPSessionExtractor:
             return session_id
 
         # Generate fallback session ID
-        import uuid
-        fallback_id = str(uuid.uuid4())
-        logger.debug("Generated fallback session ID", session_id=fallback_id)
-        return fallback_id
+        global _fallback_session_id
+        if _fallback_session_id is None:
+            import uuid
+
+            _fallback_session_id = str(uuid.uuid4())
+            logger.debug("Generated fallback session ID", session_id=_fallback_session_id)
+        else:
+            logger.debug("Reusing fallback session ID", session_id=_fallback_session_id)
+
+        return _fallback_session_id
 
 
 async def get_session_agent_id() -> str:

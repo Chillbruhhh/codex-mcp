@@ -18,6 +18,7 @@ import structlog
 from .container_manager import CodexContainerManager, ContainerSession
 from .utils.config import Config, get_config
 from .utils.logging import LogContext
+from .workspace_detector import workspace_detector
 
 logger = structlog.get_logger(__name__)
 
@@ -172,13 +173,28 @@ class CodexSessionManager:
                 provider = session.config.get("provider", self.config.codex.provider)
                 approval_mode = session.config.get("approval_mode", self.config.codex.approval_mode)
 
-                # Create container session
+                # Detect client workspace for direct file collaboration
+                client_workspace = workspace_detector.detect_client_workspace(
+                    session_id=session_id,
+                    hints=session.config.get("workspace_hints")
+                )
+
+                if client_workspace:
+                    workspace_info = workspace_detector.get_workspace_info(client_workspace)
+                    logger.info("Detected client workspace for collaborative session",
+                               session_id=session_id,
+                               workspace=client_workspace,
+                               project_types=workspace_info.get("project_types", []),
+                               has_git=workspace_info.get("has_git", False))
+
+                # Create container session with workspace integration
                 async with self.container_manager.create_session(
                     session_id=session_id,
                     agent_id=agent_id,
                     model=model,
                     provider=provider,
-                    approval_mode=approval_mode
+                    approval_mode=approval_mode,
+                    client_workspace_dir=client_workspace  # Pass detected workspace
                 ) as container_session:
 
                     session.container_session = container_session
@@ -262,13 +278,28 @@ class CodexSessionManager:
                 provider = session.config.get("provider", self.config.codex.provider)
                 approval_mode = session.config.get("approval_mode", self.config.codex.approval_mode)
 
-                # Create container session directly (no context manager)
+                # Detect client workspace for persistent collaborative session
+                client_workspace = workspace_detector.detect_client_workspace(
+                    session_id=session_id,
+                    hints=session.config.get("workspace_hints")
+                )
+
+                if client_workspace:
+                    workspace_info = workspace_detector.get_workspace_info(client_workspace)
+                    logger.info("Detected client workspace for persistent session",
+                               session_id=session_id,
+                               workspace=client_workspace,
+                               project_types=workspace_info.get("project_types", []),
+                               has_git=workspace_info.get("has_git", False))
+
+                # Create container session directly (no context manager) with workspace
                 container_session = await self.container_manager._create_persistent_session(
                     session_id=session_id,
                     agent_id=agent_id,
                     model=model,
                     provider=provider,
-                    approval_mode=approval_mode
+                    approval_mode=approval_mode,
+                    client_workspace_dir=client_workspace  # Pass detected workspace
                 )
 
                 session.container_session = container_session
@@ -297,6 +328,24 @@ class CodexSessionManager:
                     del self.active_sessions[session_id]
                 raise
 
+    async def get_or_create_active_session(
+        self,
+        agent_id: str,
+        session_config: Optional[Dict[str, Any]] = None,
+    ) -> AgentSession:
+        """Return an existing active session or create a new persistent one."""
+
+        # Prefer an existing active session to maintain conversation context
+        for session_id in await self.get_agent_sessions(agent_id):
+            session = self.active_sessions.get(session_id)
+            if session and session.status == "active":
+                return session
+
+        # No active session found; create a new persistent one
+        return await self.create_persistent_session(
+            agent_id=agent_id,
+            session_config=session_config,
+        )
     async def send_message_to_codex(
         self,
         session_id: str,

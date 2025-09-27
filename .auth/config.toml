@@ -1,0 +1,22 @@
+# Codex CLI Configuration Template
+# Aligned with official Codex CLI - OpenAI only
+
+model = "gpt-5-codex"
+provider = "openai"
+approvalMode = "suggest"
+fullAutoErrorMode = "ask-user"
+notify = false
+
+[providers.openai]
+name = "OpenAI"
+baseURL = "https://api.openai.com/v1"
+envKey = "OPENAI_API_KEY"
+
+[history]
+maxSize = 1000
+saveHistory = true
+sensitivePatterns = []
+
+# MCP Server configuration placeholder
+# [mcp_servers]
+# Will be dynamically added per session if needed

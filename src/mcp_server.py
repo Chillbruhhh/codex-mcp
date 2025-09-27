@@ -21,6 +21,8 @@ from .utils.config import get_config
 from .utils.logging import setup_logging, get_logger, LogContext
 from .session_middleware import session_aware_tool, get_session_agent_id
 from .session_registry import get_session_registry
+from .conversational_mcp_tools import ConversationalMCPTools
+from .direct_codex_tools import DirectCodexTools
 
 # Initialize configuration and logging
 config = get_config()
@@ -34,8 +36,10 @@ logger = get_logger(__name__)
 # Initialize FastMCP server
 mcp = FastMCP("Codex CLI MCP Server - 4 Core Tools")
 
-# Initialize session manager
+# Initialize session manager and conversational tools
 session_manager = CodexSessionManager(config)
+conversational_tools = ConversationalMCPTools(session_manager)
+direct_tools = DirectCodexTools(session_manager)
 
 # Server state tracking
 server_start_time = time.time()
@@ -220,7 +224,7 @@ async def plan(
     task: str,
     repo_context: Optional[Dict[str, Any]] = None,
     constraints: Optional[List[str]] = None
-) -> PlanResponse:
+) -> Dict[str, Any]:
     """
     Analyze task and repository context to create detailed implementation plan.
 
@@ -244,25 +248,26 @@ async def plan(
                    agent_id=agent_id)
 
         try:
-            # Build rich context prompt for Codex
-            context_prompt = _build_planning_context(task, repo_context, constraints)
+            direct_result = await direct_tools.plan(
+                agent_id=agent_id,
+                task=task,
+                repo_context=repo_context,
+                constraints=constraints,
+            )
 
-            # Get response from Codex with rich context
-            codex_response = await _send_to_codex(agent_id, context_prompt, "planning")
+            structured_response = _coerce_plan_response(direct_result)
 
-            # Parse and structure the response
-            structured_response = _parse_planning_response(codex_response)
-
-            logger.info("Planning completed",
-                       agent_id=agent_id,
-                       files_affected=len(structured_response.affected_files),
-                       complexity=structured_response.estimated_complexity)
+            logger.info(
+                "Planning completed",
+                agent_id=agent_id,
+                files_affected=len(structured_response.affected_files),
+                complexity=structured_response.estimated_complexity,
+            )
 
             return structured_response
 
         except Exception as e:
             logger.error("Planning failed", agent_id=agent_id, error=str(e))
-            # Return fallback response
             return PlanResponse(
                 task_breakdown=["Error occurred during planning"],
                 affected_files=[],
@@ -271,7 +276,7 @@ async def plan(
                 dependencies=[],
                 estimated_complexity="unknown",
                 gotchas=[f"Planning error: {str(e)}"],
-                integration_points=[]
+                integration_points=[],
             )
 
 
@@ -695,6 +700,20 @@ async def _send_to_codex(agent_id: str, prompt: str, operation_type: str) -> str
         logger.error(f"Failed to communicate with Codex for {operation_type}",
                     agent_id=agent_id, error=str(e))
         return f"Error communicating with Codex: {str(e)}"
+
+
+def _coerce_plan_response(data: Dict[str, Any]) -> PlanResponse:
+    """Convert raw dict from direct Codex tools into PlanResponse."""
+    return PlanResponse(
+        task_breakdown=list(data.get("task_breakdown", [])),
+        affected_files=list(data.get("affected_files", [])),
+        implementation_approach=data.get("implementation_approach", ""),
+        architectural_decisions=list(data.get("architectural_decisions", [])),
+        dependencies=list(data.get("dependencies", [])),
+        estimated_complexity=data.get("estimated_complexity", "medium"),
+        gotchas=list(data.get("gotchas", [])),
+        integration_points=list(data.get("integration_points", [])),
+    )
 
 
 def _parse_planning_response(response: str) -> PlanResponse:

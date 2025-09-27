@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import tempfile
+import shutil
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any, AsyncContextManager
@@ -23,8 +24,10 @@ import structlog
 
 from .utils.config import Config, get_config
 from .utils.logging import LogContext, set_correlation_id
-from .auth_manager import CodexAuthManager
+from .auth_manager import CodexAuthManager, AuthMethod
 from .persistence import AgentPersistenceManager, ContainerStatus
+from .interactive_codex_manager import InteractiveCodexManager
+from .persistent_agent_manager import PersistentAgentManager
 
 logger = structlog.get_logger(__name__)
 
@@ -40,6 +43,7 @@ class ContainerSession:
     status: str = "initializing"
     config_dir: Optional[str] = None
     workspace_dir: Optional[str] = None
+    client_workspace_dir: Optional[str] = None  # Real workspace path from MCP client
     environment: Dict[str, str] = field(default_factory=dict)
     resource_limits: Dict[str, Any] = field(default_factory=dict)
 
@@ -96,9 +100,12 @@ class CodexContainerManager:
         self.docker_client = docker.from_env()
         self.auth_manager = CodexAuthManager(self.config)
         self.persistence_manager = AgentPersistenceManager(data_path)
+        self.interactive_manager = InteractiveCodexManager()
+        self.persistent_agent_manager = PersistentAgentManager(self.docker_client, self.config)
         self.active_sessions: Dict[str, ContainerSession] = {}
         self.base_image = "codex-mcp-base"
         self._oauth_tokens: Optional[Dict[str, Any]] = None
+        self._interactive_bridge_script: Optional[str] = None
 
         # Check for persistent mode
         self.persistent_mode = os.getenv("PERSISTENT_MODE", "false").lower() == "true"
@@ -262,7 +269,8 @@ CMD ["bash", "/app/logging_startup.sh"]
         model: str = "gpt-5-codex",
         provider: str = "openai",
         approval_mode: str = "suggest",
-        reasoning: str = "medium"
+        reasoning: str = "medium",
+        client_workspace_dir: Optional[str] = None
     ) -> AsyncContextManager[ContainerSession]:
         """
         Create and manage a Codex CLI container session.
@@ -274,6 +282,7 @@ CMD ["bash", "/app/logging_startup.sh"]
             provider: AI provider (openai, azure, etc.)
             approval_mode: Codex approval mode
             reasoning: Reasoning level for GPT-5 models (low, medium, high)
+            client_workspace_dir: Client's actual workspace directory for direct collaboration
 
         Yields:
             ContainerSession: Active container session
@@ -298,7 +307,8 @@ CMD ["bash", "/app/logging_startup.sh"]
                 container_name=f"codex-{session_id}",
                 status="creating",
                 model=model,
-                reasoning=reasoning
+                reasoning=reasoning,
+                client_workspace_dir=client_workspace_dir  # Store client workspace for mounting
             )
 
             try:
@@ -317,8 +327,8 @@ CMD ["bash", "/app/logging_startup.sh"]
                 # Start container
                 await self._start_container(session)
 
-                # Start persistent Codex conversation
-                await self.start_codex_conversation(session)
+                # Start interactive Codex CLI session
+                await self._start_interactive_codex_session(session)
 
                 # Add to active sessions
                 self.active_sessions[session_id] = session
@@ -464,7 +474,16 @@ CMD ["bash", "/app/logging_startup.sh"]
                     )
 
             # Create session object for existing container
-            session_id = f"reconnect-{agent_info.agent_id}-{int(time.time())}"
+            persistent_session_id = agent_info.persistent_session_id or (
+                f"persistent-{agent_info.agent_id}"
+            )
+            if agent_info.persistent_session_id is None:
+                await self.persistence_manager.update_persistent_session_id(
+                    agent_info.agent_id,
+                    persistent_session_id,
+                )
+
+            session_id = persistent_session_id
             session = ContainerSession(
                 session_id=session_id,
                 agent_id=agent_info.agent_id,
@@ -577,7 +596,8 @@ CMD ["bash", "/app/logging_startup.sh"]
                 model=model,
                 reasoning=reasoning,
                 provider=provider,
-                approval_mode=approval_mode
+                approval_mode=approval_mode,
+                persistent_session_id=session.session_id
             )
 
             # Update status to running
@@ -610,7 +630,8 @@ CMD ["bash", "/app/logging_startup.sh"]
         model: str = "gpt-5-codex",
         provider: str = "openai",
         approval_mode: str = "suggest",
-        reasoning: str = "medium"
+        reasoning: str = "medium",
+        client_workspace_dir: Optional[str] = None
     ) -> ContainerSession:
         """
         Create a persistent container session that doesn't auto-cleanup.
@@ -643,7 +664,8 @@ CMD ["bash", "/app/logging_startup.sh"]
                 agent_id=agent_id,
                 container_name=f"codex-session-{agent_id}-{int(time.time())}",
                 model=model,
-                reasoning=reasoning
+                reasoning=reasoning,
+                client_workspace_dir=client_workspace_dir  # Store client workspace
             )
 
             try:
@@ -721,10 +743,21 @@ CMD ["bash", "/app/logging_startup.sh"]
 
         # Create auth.json file for Codex CLI authentication
         # This is required for Codex CLI to properly authenticate with the API
+        tokens_payload = None
+
+        if credentials.method == AuthMethod.CHATGPT_OAUTH:
+            if credentials.oauth_tokens:
+                tokens_payload = credentials.oauth_tokens.to_dict()
+            elif credentials.environment_vars.get("OPENAI_ACCESS_TOKEN"):
+                tokens_payload = {
+                    "access_token": credentials.environment_vars["OPENAI_ACCESS_TOKEN"],
+                    "token_type": "Bearer"
+                }
+
         auth_json_content = {
-            "OPENAI_API_KEY": credentials.api_key,
-            "tokens": None,
-            "last_refresh": None
+            "OPENAI_API_KEY": credentials.api_key if credentials.method == AuthMethod.API_KEY else None,
+            "tokens": tokens_payload,
+            "last_refresh": time.time() if tokens_payload else None
         }
         auth_json_path = Path(session.config_dir) / "auth.json"
         auth_json_path.write_text(json.dumps(auth_json_content))
@@ -734,6 +767,67 @@ CMD ["bash", "/app/logging_startup.sh"]
                     auth_path=str(auth_json_path),
                     model=model,
                     auth_method=credentials.method.value)
+
+    async def _prepare_persistent_workspace(self, session: ContainerSession) -> str:
+        """Ensure a persistent workspace directory exists for the agent."""
+        if session.client_workspace_dir and os.path.isdir(session.client_workspace_dir):
+            return session.client_workspace_dir
+
+        agent_base = Path(self.persistence_manager.data_path) / "agents" / session.agent_id
+        workspace_path = agent_base / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        if session.workspace_dir and os.path.isdir(session.workspace_dir):
+            self._copy_directory_contents(Path(session.workspace_dir), workspace_path)
+
+        return str(workspace_path)
+
+    async def _prepare_persistent_config(self, session: ContainerSession) -> str:
+        """Ensure a persistent config directory exists for the agent."""
+        agent_base = Path(self.persistence_manager.data_path) / "agents" / session.agent_id
+        config_path = agent_base / "config"
+        config_path.mkdir(parents=True, exist_ok=True)
+
+        if session.config_dir and os.path.isdir(session.config_dir):
+            self._copy_directory_contents(Path(session.config_dir), config_path)
+
+        return str(config_path)
+
+    def _copy_directory_contents(self, source: Path, destination: Path) -> None:
+        """Copy directory contents from source to destination, overwriting existing files."""
+        if not source.exists():
+            return
+
+        try:
+            if source.resolve() == destination.resolve():
+                return
+        except Exception:
+            # If resolution fails (e.g., due to permissions), fall back to direct comparison
+            if str(source) == str(destination):
+                return
+
+        for item in source.iterdir():
+            dest_item = destination / item.name
+            if item.is_dir():
+                shutil.copytree(item, dest_item, dirs_exist_ok=True)
+            else:
+                shutil.copy2(item, dest_item)
+
+    def _get_interactive_bridge_script(self) -> str:
+        """Load and cache the interactive Codex bridge script content."""
+        if self._interactive_bridge_script is None:
+            script_path = Path(__file__).resolve().parent.parent / "scripts" / "interactive_codex_agent.py"
+            try:
+                self._interactive_bridge_script = script_path.read_text()
+            except Exception as exc:
+                logger.error(
+                    "Failed to load interactive bridge script",
+                    error=str(exc),
+                    script_path=str(script_path)
+                )
+                self._interactive_bridge_script = "print('Interactive Codex bridge script missing.')"
+
+        return self._interactive_bridge_script
 
     async def _create_container(self, session: ContainerSession) -> None:
         """Create the Docker container for the session."""
@@ -769,14 +863,16 @@ CMD ["bash", "/app/logging_startup.sh"]
                 abs_workspace_dir: {"bind": "/app/workspace", "mode": "rw"}
             }
 
-            # Add OAuth token directory mount if OAuth tokens are available
-            oauth_dir = self._get_oauth_directory()
-            if oauth_dir and os.path.exists(oauth_dir):
-                abs_oauth_dir = os.path.abspath(oauth_dir)
-                volume_mounts[abs_oauth_dir] = {"bind": "/app/.codex", "mode": "ro"}
-                logger.debug("Adding OAuth token directory mount",
-                           host_path=abs_oauth_dir,
-                           container_path="/app/.codex")
+            # Add OAuth token directory mount if OAuth tokens are available and API key not used
+            oauth_dir = None
+            if credentials.method != AuthMethod.API_KEY:
+                oauth_dir = self._get_oauth_directory()
+                if oauth_dir and os.path.exists(oauth_dir):
+                    abs_oauth_dir = os.path.abspath(oauth_dir)
+                    volume_mounts[abs_oauth_dir] = {"bind": "/app/.codex", "mode": "ro"}
+                    logger.debug("Adding OAuth token directory mount",
+                               host_path=abs_oauth_dir,
+                               container_path="/app/.codex")
 
             container = self.docker_client.containers.create(
                 image=self.base_image,
@@ -830,6 +926,48 @@ CMD ["bash", "/app/logging_startup.sh"]
         except Exception as e:
             logger.error("Container start failed", error=str(e))
             raise ContainerCreationError(f"Failed to start container: {e}")
+
+    async def _start_interactive_codex_session(self, session: ContainerSession) -> None:
+        """
+        Start an interactive Codex CLI session using the InteractiveCodexManager.
+
+        This replaces the old command-based approach with a truly interactive
+        conversation-based collaboration system.
+        """
+        with LogContext(session.session_id):
+            try:
+                container = self.docker_client.containers.get(session.container_id)
+
+                logger.info("Starting interactive Codex CLI session",
+                           container_id=session.container_id[:12],
+                           has_client_workspace=session.client_workspace_dir is not None)
+
+                # Setup authentication first
+                if not session.auth_setup_complete:
+                    await self._setup_codex_auth(container, session)
+
+                # Use the InteractiveCodexManager to start the session
+                interactive_session = await self.interactive_manager.start_interactive_session(
+                    container=container,
+                    session_id=session.session_id,
+                    agent_id=session.agent_id,
+                    workspace_dir="/app/workspace",
+                    client_workspace_dir=session.client_workspace_dir
+                )
+
+                # Store the interactive session reference in our container session
+                session.conversation_active = True
+                session.last_interaction = time.time()
+
+                logger.info("Interactive Codex CLI session started successfully",
+                           session_id=session.session_id,
+                           agent_id=session.agent_id)
+
+            except Exception as e:
+                logger.error("Failed to start interactive Codex CLI session",
+                           session_id=session.session_id,
+                           error=str(e))
+                raise ContainerExecutionError(f"Interactive session startup failed: {e}")
 
 
     async def start_codex_conversation(self, session: ContainerSession) -> None:
@@ -1023,10 +1161,13 @@ CMD ["bash", "/app/logging_startup.sh"]
         timeout: int = 300
     ) -> str:
         """
-        Send a natural language message to Codex CLI using exec mode.
+        Send a natural language message to interactive Codex CLI session.
+
+        This method now uses the InteractiveCodexManager for true conversational
+        interaction with maintained context and workspace access.
 
         Args:
-            session: Container session with active conversation
+            session: Container session with active interactive conversation
             message: Natural language message to send
             timeout: Response timeout in seconds
 
@@ -1036,6 +1177,88 @@ CMD ["bash", "/app/logging_startup.sh"]
         Raises:
             ContainerExecutionError: If message sending fails
         """
+        with LogContext(session.session_id):
+            try:
+                logger.info("Sending message to interactive Codex CLI",
+                           message_preview=message[:100],
+                           session_id=session.session_id)
+
+                # Use the Persistent Agent Manager for true interactive conversation
+                # Check if we have a persistent agent for this session
+                agent_sessions = self.persistent_agent_manager.list_active_agents()
+                existing_agent = next((a for a in agent_sessions if a["session_id"] == session.session_id), None)
+
+                if not existing_agent:
+                    logger.info("Creating persistent Codex CLI agent",
+                               session_id=session.session_id,
+                               agent_id=session.agent_id)
+
+                    # Prepare persistent workspace and config directories
+                    persistent_workspace = await self._prepare_persistent_workspace(session)
+                    persistent_config = await self._prepare_persistent_config(session)
+
+                    agent_session = await self.persistent_agent_manager.create_persistent_agent(
+                        session_id=session.session_id,
+                        agent_id=session.agent_id,
+                        workspace_dir=persistent_workspace,
+                        client_workspace_dir=session.client_workspace_dir,
+                        model=getattr(session, 'model', 'gpt-4'),
+                        config_dir=persistent_config,
+                        environment=session.environment,
+                        bridge_script=self._get_interactive_bridge_script()
+                    )
+
+                    # Register persistent container with persistence manager for cleanup coordination
+                    existing_persistent = await self.persistence_manager.get_agent_container(session.agent_id)
+                    if not existing_persistent:
+                        await self.persistence_manager.register_agent_container(
+                            agent_id=session.agent_id,
+                            container_id=agent_session.container_id or "",
+                            container_name=agent_session.container_name,
+                            workspace_path=persistent_workspace,
+                            config_path=persistent_config,
+                            model=getattr(session, 'model', 'gpt-4'),
+                            reasoning=getattr(session, 'reasoning', 'medium'),
+                            provider='openai',
+                            approval_mode='suggest',
+                            persistent_session_id=session.session_id
+                        )
+
+                    if agent_session.container_id:
+                        await self.persistence_manager.update_container_status(
+                            session.agent_id,
+                            ContainerStatus.RUNNING
+                        )
+
+                    logger.info("Persistent Codex CLI agent created and ready",
+                               session_id=session.session_id,
+                               container_id=agent_session.container_id[:12])
+
+                # Send message to the persistent agent
+                response = await self.persistent_agent_manager.send_message_to_agent(
+                    session_id=session.session_id,
+                    message=message,
+                    timeout=timeout
+                )
+
+                session.last_interaction = time.time()
+
+                # Update persistence manager for persistent agents
+                if (self.persistent_mode and session.agent_id and
+                    await self.persistence_manager.get_agent_container(session.agent_id)):
+                    await self.persistence_manager.update_last_active(session.agent_id)
+
+                logger.info("Response received from persistent Codex CLI agent",
+                           response_length=len(response),
+                           session_id=session.session_id)
+
+                return response
+
+            except Exception as e:
+                logger.error("Failed to send message to interactive Codex CLI",
+                           session_id=session.session_id,
+                           error=str(e))
+                raise ContainerExecutionError(f"Interactive message sending failed: {e}")
         with LogContext(session.session_id):
             if not session.conversation_active:
                 raise ContainerExecutionError("No active conversation session")
