@@ -412,16 +412,33 @@ __CODEX_BRIDGE__
                         response = read_result.output.decode('utf-8', errors='ignore').strip()
 
                         if response and response != "PROCESSING":
-                            logger.debug(
-                                "Agent response captured",
-                                session_id=session.session_id,
-                                response_preview=response[:200],
-                                response_length=len(response),
-                            )
-                            logger.debug("Agent response received",
-                                       session_id=session.session_id,
-                                       response_length=len(response))
-                            return response
+                            # Check if this looks like a complete response
+                            # Look for common completion indicators or task completion markers
+                            if ("[task_complete]" in response or
+                                "task completed" in response.lower() or
+                                (not any(marker in response for marker in [
+                                    "[task_started]",
+                                    "[approval_requested]",
+                                    "command pending",
+                                    "waiting_for_message"
+                                ]) and len(response) > 200 and self._is_response_complete(response))):  # Only use heuristics if no pending markers
+
+                                logger.debug(
+                                    "Agent response captured",
+                                    session_id=session.session_id,
+                                    response_preview=response[:200],
+                                    response_length=len(response),
+                                )
+                                logger.debug("Agent response received",
+                                           session_id=session.session_id,
+                                           response_length=len(response))
+                                return response
+                            else:
+                                # Response exists but may not be complete, wait a bit more
+                                logger.debug("Partial response detected, waiting for completion",
+                                           session_id=session.session_id,
+                                           response_preview=response[:100])
+                                # Continue waiting
 
             except Exception as e:
                 logger.debug("Error checking for agent response",

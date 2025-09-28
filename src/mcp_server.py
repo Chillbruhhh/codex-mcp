@@ -195,17 +195,25 @@ class AuditResponse(BaseModel):
     analysis_timestamp: str
 
 
+class DebugSolution(BaseModel):
+    """Represents a debugging solution."""
+    approach: str
+    description: str
+    code_changes: List[CodeChange]
+    confidence: float  # 0.0 to 1.0
+    estimated_time: str
+    trade_offs: List[str]
+
+
 class DebugResponse(BaseModel):
     """Structured response for debug analysis tool."""
-    debugging_strategy: List[str]
-    investigation_steps: List[str]
-    potential_causes: List[str]
-    debugging_tools_suggested: List[str]
-    log_analysis: str
-    environment_checks: List[str]
-    next_actions: List[str]
-    confidence_level: str  # "high", "medium", "low"
-    estimated_time: str
+    root_cause: str
+    solutions: List[DebugSolution]
+    debugging_steps: List[str]
+    prevention_strategies: List[str]
+    related_issues: List[str]
+    confidence_score: float  # 0.0 to 1.0
+    estimated_fix_time: str
 
 
 @mcp.tool()
@@ -482,6 +490,13 @@ async def review(
                    agent_id=agent_id)
 
         try:
+            # Ensure content is a dict
+            if isinstance(content, str):
+                # If content is a string, treat it as a single file
+                content = {"files": [{"name": "unknown", "content": content}]}
+            elif not isinstance(content, dict):
+                raise ValueError("Content must be a dictionary with 'files' or 'diffs' key")
+
             # Build comprehensive review context
             context_prompt = _build_review_context(content, rubric, focus_areas)
 
@@ -964,8 +979,16 @@ REVIEW CRITERIA:
     elif "files" in content:
         prompt += "FILES:\n"
         for file_info in content["files"]:
-            prompt += f"File: {file_info.get('name', 'unknown')}\n"
-            prompt += f"{file_info.get('content', '')}\n\n"
+            if isinstance(file_info, str):
+                # Handle simple string file paths
+                prompt += f"File: {file_info}\n"
+                prompt += f"(File content would need to be read separately)\n\n"
+            elif isinstance(file_info, dict):
+                # Handle dictionary with name/content
+                prompt += f"File: {file_info.get('name', 'unknown')}\n"
+                prompt += f"{file_info.get('content', '')}\n\n"
+            else:
+                prompt += f"File: unknown format\n\n"
 
     prompt += f"""
 REQUIRED OUTPUT FORMAT:
@@ -1297,7 +1320,53 @@ def _parse_review_response(response: str) -> ReviewResponse:
 
 def _parse_fix_response(response: str) -> FixResponse:
     """Parse Codex fix response into structured format."""
-    # Simplified parsing - in production, this would be more sophisticated
+
+    # Try to parse structured JSON response first
+    cleaned = response.strip()
+
+    # Look for JSON structure
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+
+    if start != -1 and end != -1 and end >= start:
+        candidate = cleaned[start:end + 1]
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and "fixes" in parsed:
+                # Parse structured fix response
+                fixes = []
+                for fix_data in parsed.get("fixes", []):
+                    if isinstance(fix_data, dict):
+                        files_to_change = []
+                        for change_data in fix_data.get("files_to_change", []):
+                            if isinstance(change_data, dict):
+                                files_to_change.append(CodeChange(
+                                    file=change_data.get("file", "unknown"),
+                                    action=change_data.get("action", "modify"),
+                                    diff=change_data.get("diff", ""),
+                                    explanation=change_data.get("explanation", ""),
+                                    line_numbers=change_data.get("line_numbers")
+                                ))
+
+                        fixes.append(Fix(
+                            problem=fix_data.get("problem", ""),
+                            solution=fix_data.get("solution", ""),
+                            files_to_change=files_to_change,
+                            root_cause=fix_data.get("root_cause", ""),
+                            prevention=fix_data.get("prevention", "")
+                        ))
+
+                return FixResponse(
+                    fixes=fixes,
+                    diagnostic_steps=parsed.get("diagnostic_steps", []),
+                    quick_fix_available=parsed.get("quick_fix_available", True),
+                    estimated_fix_time=parsed.get("estimated_fix_time", "unknown"),
+                    related_issues=parsed.get("related_issues", [])
+                )
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback to simple parsing - don't truncate the response
     return FixResponse(
         fixes=[
             Fix(
@@ -1305,9 +1374,9 @@ def _parse_fix_response(response: str) -> FixResponse:
                 solution="Solution from Codex",
                 files_to_change=[
                     CodeChange(
-                        file="example.py",
+                        file="raw_response.txt",
                         action="modify",
-                        diff=response[:300] + "..." if len(response) > 300 else response,
+                        diff=response,  # Don't truncate
                         explanation="Fix from Codex analysis"
                     )
                 ],
